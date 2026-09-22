@@ -1,0 +1,23 @@
+{
+  "name": "global-tech-hub-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch index.mjs",
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "imapflow": "^1.7.6",
+    "jsonwebtoken": "^9.0.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "mailparser": "^3.9.17",
+    "mongodb": "^7.5.0",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5"
+  }
+}
