@@ -44,6 +44,7 @@ import { Route as AuthenticatedProjectRouteImport } from './routes/_authenticate
 import { Route as AuthenticatedProposalsRouteImport } from './routes/_authenticated/proposals'
 import { Route as AuthenticatedReportsRouteImport } from './routes/_authenticated/reports'
 import { Route as AuthenticatedRevenueRouteImport } from './routes/_authenticated/revenue'
+import { Route as AuthenticatedSalesRouteImport } from './routes/_authenticated/sales'
 import { Route as AuthenticatedSalesLiteratureRouteImport } from './routes/_authenticated/sales-literature'
 import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticated/settings'
 import { Route as AuthenticatedStrategyRouteImport } from './routes/_authenticated/strategy'
@@ -243,6 +244,11 @@ const AuthenticatedRevenueRoute = AuthenticatedRevenueRouteImport.update({
   path: '/revenue',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedSalesRoute = AuthenticatedSalesRouteImport.update({
+  id: '/sales',
+  path: '/sales',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const AuthenticatedSalesLiteratureRoute =
   AuthenticatedSalesLiteratureRouteImport.update({
     id: '/sales-literature',
@@ -376,6 +382,7 @@ export interface FileRoutesByFullPath {
   '/proposals': typeof AuthenticatedProposalsRouteWithChildren
   '/reports': typeof AuthenticatedReportsRoute
   '/revenue': typeof AuthenticatedRevenueRoute
+  '/sales': typeof AuthenticatedSalesRoute
   '/sales-literature': typeof AuthenticatedSalesLiteratureRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/strategy': typeof AuthenticatedStrategyRoute
@@ -424,6 +431,7 @@ export interface FileRoutesByTo {
   '/products-services': typeof AuthenticatedProductsServicesRoute
   '/reports': typeof AuthenticatedReportsRoute
   '/revenue': typeof AuthenticatedRevenueRoute
+  '/sales': typeof AuthenticatedSalesRoute
   '/sales-literature': typeof AuthenticatedSalesLiteratureRoute
   '/settings': typeof AuthenticatedSettingsRoute
   '/strategy': typeof AuthenticatedStrategyRoute
@@ -479,6 +487,7 @@ export interface FileRoutesById {
   '/_authenticated/proposals': typeof AuthenticatedProposalsRouteWithChildren
   '/_authenticated/reports': typeof AuthenticatedReportsRoute
   '/_authenticated/revenue': typeof AuthenticatedRevenueRoute
+  '/_authenticated/sales': typeof AuthenticatedSalesRoute
   '/_authenticated/sales-literature': typeof AuthenticatedSalesLiteratureRoute
   '/_authenticated/settings': typeof AuthenticatedSettingsRoute
   '/_authenticated/strategy': typeof AuthenticatedStrategyRoute
@@ -534,6 +543,7 @@ export interface FileRouteTypes {
     | '/proposals'
     | '/reports'
     | '/revenue'
+    | '/sales'
     | '/sales-literature'
     | '/settings'
     | '/strategy'
@@ -582,6 +592,7 @@ export interface FileRouteTypes {
     | '/products-services'
     | '/reports'
     | '/revenue'
+    | '/sales'
     | '/sales-literature'
     | '/settings'
     | '/strategy'
@@ -636,6 +647,7 @@ export interface FileRouteTypes {
     | '/_authenticated/proposals'
     | '/_authenticated/reports'
     | '/_authenticated/revenue'
+    | '/_authenticated/sales'
     | '/_authenticated/sales-literature'
     | '/_authenticated/settings'
     | '/_authenticated/strategy'
@@ -911,6 +923,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedRevenueRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/sales': {
+      id: '/_authenticated/sales'
+      path: '/sales'
+      fullPath: '/sales'
+      preLoaderRoute: typeof AuthenticatedSalesRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/sales-literature': {
       id: '/_authenticated/sales-literature'
       path: '/sales-literature'
@@ -1144,6 +1163,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedProposalsRoute: typeof AuthenticatedProposalsRouteWithChildren
   AuthenticatedReportsRoute: typeof AuthenticatedReportsRoute
   AuthenticatedRevenueRoute: typeof AuthenticatedRevenueRoute
+  AuthenticatedSalesRoute: typeof AuthenticatedSalesRoute
   AuthenticatedSalesLiteratureRoute: typeof AuthenticatedSalesLiteratureRoute
   AuthenticatedSettingsRoute: typeof AuthenticatedSettingsRoute
   AuthenticatedStrategyRoute: typeof AuthenticatedStrategyRoute
@@ -1182,6 +1202,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedProposalsRoute: AuthenticatedProposalsRouteWithChildren,
   AuthenticatedReportsRoute: AuthenticatedReportsRoute,
   AuthenticatedRevenueRoute: AuthenticatedRevenueRoute,
+  AuthenticatedSalesRoute: AuthenticatedSalesRoute,
   AuthenticatedSalesLiteratureRoute: AuthenticatedSalesLiteratureRoute,
   AuthenticatedSettingsRoute: AuthenticatedSettingsRoute,
   AuthenticatedStrategyRoute: AuthenticatedStrategyRoute,

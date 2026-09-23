@@ -1,9 +1,10 @@
 # ---- Stage 1: Build frontend ----
-FROM node:22-alpine AS build
+FROM node:22-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install
 COPY . .
+ENV VITE_API_URL=/api
 RUN npm run build
 
 # ---- Stage 2: API server ----
