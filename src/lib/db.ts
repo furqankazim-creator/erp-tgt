@@ -159,7 +159,80 @@ export function useDeleteRow(table: TableName, label = "Record") {
     mutationFn: (id: string) => deleteRow(table, id),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: [table] });
-      toast.success(`${label} deleted`);
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      toast.success(`${label} moved to Trash`);
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export type TrashItem = Row & {
+  id: string;
+  _table: TableName;
+  deleted_at: string;
+  deleted_by?: string | null;
+  name?: string;
+  title?: string;
+  subject?: string;
+  client_name?: string;
+  display_id?: string;
+};
+
+async function fetchTrash(): Promise<TrashItem[]> {
+  return (await apiFetch("/trash")) as TrashItem[];
+}
+
+async function restoreTrashRow(table: TableName, id: string): Promise<Row> {
+  return (await apiFetch(`/trash/${table}/${id}/restore`, { method: "POST" })) as Row;
+}
+
+async function permanentDeleteTrashRow(table: TableName, id: string): Promise<void> {
+  await apiFetch(`/trash/${table}/${id}`, { method: "DELETE" });
+}
+
+async function emptyTrash(): Promise<void> {
+  await apiFetch("/trash/empty", { method: "POST" });
+}
+
+export function useTrashRows() {
+  return useQuery({
+    queryKey: ["trash"],
+    queryFn: fetchTrash,
+  });
+}
+
+export function useRestoreRow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ table, id }: { table: TableName; id: string }) => restoreTrashRow(table, id),
+    onSuccess: (_data, { table }) => {
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      void qc.invalidateQueries({ queryKey: [table] });
+      toast.success("Item restored from Trash");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function usePermanentDeleteRow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ table, id }: { table: TableName; id: string }) => permanentDeleteTrashRow(table, id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      toast.success("Item permanently deleted");
+    },
+    onError: (error: Error) => toast.error(error.message),
+  });
+}
+
+export function useEmptyTrash() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: emptyTrash,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      toast.success("Trash emptied");
     },
     onError: (error: Error) => toast.error(error.message),
   });

@@ -50,6 +50,7 @@ import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedStrategyRouteImport } from './routes/_authenticated/strategy'
 import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
 import { Route as AuthenticatedTrainingRouteImport } from './routes/_authenticated/training'
+import { Route as AuthenticatedTrashRouteImport } from './routes/_authenticated/trash'
 import { Route as FeedbackTokenRouteImport } from './routes/feedback.$token'
 import { Route as TrackInquiryIdRouteImport } from './routes/track.$inquiryId'
 import { Route as AuthenticatedAccountsIndexRouteImport } from './routes/_authenticated/accounts.index'
@@ -276,6 +277,11 @@ const AuthenticatedTrainingRoute = AuthenticatedTrainingRouteImport.update({
   path: '/training',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedTrashRoute = AuthenticatedTrashRouteImport.update({
+  id: '/trash',
+  path: '/trash',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 const FeedbackTokenRoute = FeedbackTokenRouteImport.update({
   id: '/feedback/$token',
   path: '/feedback/$token',
@@ -394,6 +400,7 @@ export interface FileRoutesByFullPath {
   '/strategy': typeof AuthenticatedStrategyRoute
   '/teams': typeof AuthenticatedTeamsRoute
   '/training': typeof AuthenticatedTrainingRoute
+  '/trash': typeof AuthenticatedTrashRoute
   '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
@@ -444,6 +451,7 @@ export interface FileRoutesByTo {
   '/strategy': typeof AuthenticatedStrategyRoute
   '/teams': typeof AuthenticatedTeamsRoute
   '/training': typeof AuthenticatedTrainingRoute
+  '/trash': typeof AuthenticatedTrashRoute
   '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
@@ -501,6 +509,7 @@ export interface FileRoutesById {
   '/_authenticated/strategy': typeof AuthenticatedStrategyRoute
   '/_authenticated/teams': typeof AuthenticatedTeamsRoute
   '/_authenticated/training': typeof AuthenticatedTrainingRoute
+  '/_authenticated/trash': typeof AuthenticatedTrashRoute
   '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/_authenticated/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
@@ -558,6 +567,7 @@ export interface FileRouteTypes {
     | '/strategy'
     | '/teams'
     | '/training'
+    | '/trash'
     | '/feedback/$token'
     | '/track/$inquiryId'
     | '/accounts/$accountId'
@@ -608,6 +618,7 @@ export interface FileRouteTypes {
     | '/strategy'
     | '/teams'
     | '/training'
+    | '/trash'
     | '/feedback/$token'
     | '/track/$inquiryId'
     | '/accounts/$accountId'
@@ -664,6 +675,7 @@ export interface FileRouteTypes {
     | '/_authenticated/strategy'
     | '/_authenticated/teams'
     | '/_authenticated/training'
+    | '/_authenticated/trash'
     | '/feedback/$token'
     | '/track/$inquiryId'
     | '/_authenticated/accounts/$accountId'
@@ -978,6 +990,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTrainingRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/trash': {
+      id: '/_authenticated/trash'
+      path: '/trash'
+      fullPath: '/trash'
+      preLoaderRoute: typeof AuthenticatedTrashRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/feedback/$token': {
       id: '/feedback/$token'
       path: '/feedback/$token'
@@ -1189,6 +1208,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedStrategyRoute: typeof AuthenticatedStrategyRoute
   AuthenticatedTeamsRoute: typeof AuthenticatedTeamsRoute
   AuthenticatedTrainingRoute: typeof AuthenticatedTrainingRoute
+  AuthenticatedTrashRoute: typeof AuthenticatedTrashRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
@@ -1228,6 +1248,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedStrategyRoute: AuthenticatedStrategyRoute,
   AuthenticatedTeamsRoute: AuthenticatedTeamsRoute,
   AuthenticatedTrainingRoute: AuthenticatedTrainingRoute,
+  AuthenticatedTrashRoute: AuthenticatedTrashRoute,
 }
 
 const AuthenticatedRouteRouteWithChildren =

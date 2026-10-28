@@ -99,13 +99,13 @@ const NO_PASSWORD = { projection: { _id: 0, password_hash: 0 } };
 export async function listRows(table, { column = "created_at", ascending = false } = {}) {
   return db
     .collection(table)
-    .find({}, NO_ID)
+    .find({ deleted_at: { $exists: false } }, NO_ID)
     .sort({ [column]: ascending ? 1 : -1 })
     .toArray();
 }
 
 export async function getRow(table, id) {
-  return db.collection(table).findOne({ id }, NO_ID);
+  return db.collection(table).findOne({ id, deleted_at: { $exists: false } }, NO_ID);
 }
 
 export async function createRow(table, values) {
@@ -152,6 +152,63 @@ export async function appendActivityLog(table, id, entryOrEntries) {
 export async function deleteRow(table, id) {
   const result = await db.collection(table).deleteOne({ id });
   return result.deletedCount > 0;
+}
+
+export async function softDeleteRow(table, id, deletedBy) {
+  const now = new Date().toISOString();
+  const result = await db.collection(table).findOneAndUpdate(
+    { id, deleted_at: { $exists: false } },
+    { $set: { deleted_at: now, deleted_by: deletedBy } },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  return result;
+}
+
+export async function restoreRow(table, id) {
+  const result = await db.collection(table).findOneAndUpdate(
+    { id, deleted_at: { $exists: true } },
+    { $unset: { deleted_at: "", deleted_by: "" } },
+    { returnDocument: "after", projection: { _id: 0 } },
+  );
+  return result;
+}
+
+export async function listTrash(table) {
+  return db
+    .collection(table)
+    .find({ deleted_at: { $exists: true } }, { projection: { _id: 0 } })
+    .sort({ deleted_at: -1 })
+    .toArray();
+}
+
+export async function listAllTrash() {
+  const results = [];
+  for (const table of TABLES) {
+    const rows = await db
+      .collection(table)
+      .find({ deleted_at: { $exists: true } }, { projection: { _id: 0 } })
+      .sort({ deleted_at: -1 })
+      .toArray();
+    for (const row of rows) {
+      results.push({ ...row, _table: table });
+    }
+  }
+  results.sort((a, b) => (b.deleted_at ?? "").localeCompare(a.deleted_at ?? ""));
+  return results;
+}
+
+export async function purgeOldTrash(daysOld = 30) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - daysOld);
+  const cutoffIso = cutoff.toISOString();
+  let total = 0;
+  for (const table of TABLES) {
+    const result = await db
+      .collection(table)
+      .deleteMany({ deleted_at: { $exists: true, $lt: cutoffIso } });
+    total += result.deletedCount;
+  }
+  return total;
 }
 
 // Human-readable record numbers (INQ-2026-00001, DEAL-2026-00001, ...) — a

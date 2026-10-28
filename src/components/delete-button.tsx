@@ -42,14 +42,21 @@ export function DeleteButton({
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete {label.toLowerCase()}?</AlertDialogTitle>
+          <AlertDialogTitle>Move {label.toLowerCase()} to Trash?</AlertDialogTitle>
           <AlertDialogDescription>
-            {name ? `“${name}” will be permanently removed.` : "This cannot be undone."}
+            {name
+              ? `“${name}” will be moved to Trash. You can restore it anytime within 30 days.`
+              : "This item will be moved to Trash. You can restore it anytime within 30 days before it is permanently deleted."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={() => remove.mutate(id)}>Delete</AlertDialogAction>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => remove.mutate(id)}
+          >
+            Move to Trash
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

@@ -34,6 +34,7 @@ import {
   Scale,
   HandCoins,
   Gauge,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import type { AccessRole } from "@/lib/mock-auth";
@@ -82,6 +83,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: ShieldCheck,
     group: "Organization",
     roles: STAFF,
+  },
+  {
+    label: "Trash",
+    to: "/trash",
+    icon: Trash2,
+    group: "Organization",
+    roles: EVERYONE,
   },
 
   // People

@@ -1,6 +1,6 @@
 import cron from "node-cron";
 
-import { listRows, createRow, updateRow, appendActivityLog, getRow } from "./db.mjs";
+import { listRows, createRow, updateRow, appendActivityLog, getRow, purgeOldTrash } from "./db.mjs";
 import { sendMail } from "./mail.mjs";
 import { notify } from "./notifications.mjs";
 import { buildBasicQuotationEmail, buildMeetingRequestEmail } from "./inquiry-mail.mjs";
@@ -520,6 +520,11 @@ export async function runLiveLinkCheck() {
   console.log(`[jobs] checked ${withUrl.length} live link(s): ${up} up, ${down} down`);
 }
 
+export async function runTrashPurge() {
+  const count = await purgeOldTrash(30);
+  if (count > 0) console.log(`[jobs] purged ${count} item(s) from trash older than 30 days`);
+}
+
 function safe(name, fn) {
   return () => {
     void fn().catch((err) => console.error(`[jobs] ${name} crashed:`, err));
@@ -560,9 +565,12 @@ export function startJobs() {
   cron.schedule("*/3 * * * *", safe("email inquiry watcher", runEmailInquiryWatcher), {
     timezone: TZ,
   });
+  // Daily auto-purge of trash items older than 30 days (1 month)
+  cron.schedule("30 3 * * *", safe("trash purge", runTrashPurge), { timezone: TZ });
+  void runTrashPurge().catch((err) => console.error("[jobs] initial trash purge failed:", err));
   console.log(
-    "[jobs] 13 scheduled jobs registered (Asia/Karachi): daily/weekly/monthly reports, cost snapshot, " +
+    "[jobs] 14 scheduled jobs registered (Asia/Karachi): daily/weekly/monthly reports, cost snapshot, " +
       "missing-log digest, budget alerts, task/deadline alerts, cost lifecycle, stale quotes, " +
-      "follow-up reminders, live link check, auto response sequence, email inquiry watcher",
+      "follow-up reminders, live link check, auto response sequence, email inquiry watcher, trash purge",
   );
 }
