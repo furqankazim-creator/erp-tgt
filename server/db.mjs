@@ -1,6 +1,13 @@
+import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { MongoClient } from "mongodb";
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dirname, ".env") });
+dotenv.config();
 
 import { SEED } from "./seed-data.mjs";
 
@@ -157,7 +164,7 @@ export async function deleteRow(table, id) {
 export async function softDeleteRow(table, id, deletedBy) {
   const now = new Date().toISOString();
   const result = await db.collection(table).findOneAndUpdate(
-    { id, deleted_at: { $exists: false } },
+    { id },
     { $set: { deleted_at: now, deleted_by: deletedBy } },
     { returnDocument: "after", projection: { _id: 0 } },
   );
@@ -166,7 +173,7 @@ export async function softDeleteRow(table, id, deletedBy) {
 
 export async function restoreRow(table, id) {
   const result = await db.collection(table).findOneAndUpdate(
-    { id, deleted_at: { $exists: true } },
+    { id },
     { $unset: { deleted_at: "", deleted_by: "" } },
     { returnDocument: "after", projection: { _id: 0 } },
   );

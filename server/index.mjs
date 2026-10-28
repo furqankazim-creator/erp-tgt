@@ -1,4 +1,11 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(__dirname, ".env") });
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
@@ -1415,7 +1422,7 @@ app.delete("/api/scope_items/:id", requireAuth, async (req, res, next) => {
         .status(400)
         .json({ error: `${before.code} is part of a change request's history — raise a Removal instead.` });
     }
-    const actor = req.userFullName ?? req.userEmail ?? "System";
+    const actor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? "System";
     await softDeleteRow("scope_items", before.id, actor);
     res.status(204).end();
     recordProjectActivity(req, "scope_items", "deleted", before, null);
@@ -1563,10 +1570,73 @@ app.delete("/api/scope_change_requests/:id", requireAuth, async (req, res, next)
     if (!canDecide && !ownPending) {
       return res.status(403).json({ error: "You can only withdraw your own pending requests." });
     }
-    const deleteActor = req.userFullName ?? req.userEmail ?? actor ?? "System";
+    const deleteActor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? actor ?? "System";
     await softDeleteRow("scope_change_requests", before.id, deleteActor);
     res.status(204).end();
     recordProjectActivity(req, "scope_change_requests", "deleted", before, null);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Trash / Recycle Bin (must be defined before /api/:table) ───────────
+app.get("/api/trash", requireAuth, async (req, res, next) => {
+  try {
+    const items = await listAllTrash();
+    res.json(items);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/trash/empty", requireAuth, async (req, res, next) => {
+  try {
+    if (!["super_admin", "admin"].includes(req.userRole)) {
+      return res.status(403).json({ error: "Only administrators can empty the Trash." });
+    }
+    const count = await purgeOldTrash(0); // 0 days means purge all deleted items
+    res.json({ message: `Trash emptied (${count} items removed).`, purged: count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/trash/:table/:id/restore", requireAuth, async (req, res, next) => {
+  try {
+    if (!TABLES.includes(req.params.table)) {
+      return res.status(400).json({ error: "Unknown table." });
+    }
+    const restored = await restoreRow(req.params.table, req.params.id);
+    if (!restored) return res.status(404).json({ error: "Not found in trash." });
+    recordProjectActivity(req, req.params.table, "restored_from_trash", null, restored);
+    res.json(restored);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/trash/:table/:id", requireAuth, async (req, res, next) => {
+  try {
+    if (!TABLES.includes(req.params.table)) {
+      return res.status(400).json({ error: "Unknown table." });
+    }
+    // Only admins can permanently delete items
+    if (!["super_admin", "admin"].includes(req.userRole)) {
+      return res.status(403).json({ error: "Only administrators can permanently delete items from Trash." });
+    }
+    const dbInstance = getDB();
+    const existing = await dbInstance.collection(req.params.table).findOne({ id: req.params.id });
+    const removed = await deleteRow(req.params.table, req.params.id);
+    if (!removed) return res.status(404).json({ error: "Not found." });
+
+    // If a document was permanently deleted, clean up its GridFS file
+    if (req.params.table === "documents" && existing?.file_id && ObjectId.isValid(existing.file_id)) {
+      filesBucket()
+        .delete(new ObjectId(existing.file_id))
+        .catch((err) => console.error("[files] failed to delete stored file:", err.message));
+    }
+
+    res.status(204).end();
   } catch (err) {
     next(err);
   }
@@ -2463,74 +2533,11 @@ app.delete("/api/:table/:id", requireTable, requireAuth, requireAdminForMoneyWri
       const scoped = await scopeRowsForDeveloper(req.params.table, [existing], req.userId);
       if (scoped.length === 0) return res.status(404).json({ error: "Not found" });
     }
-    const actor = req.userFullName ?? req.userEmail ?? "System";
+    const actor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? "System";
     const removed = await softDeleteRow(req.params.table, req.params.id, actor);
     if (!removed) return res.status(404).json({ error: "Not found" });
     res.status(204).end();
     recordProjectActivity(req, req.params.table, "moved_to_trash", existing, null);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── Trash / Recycle Bin ───────────────────────────────────────────────
-app.get("/api/trash", requireAuth, async (req, res, next) => {
-  try {
-    const items = await listAllTrash();
-    res.json(items);
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.post("/api/trash/:table/:id/restore", requireAuth, async (req, res, next) => {
-  try {
-    if (!TABLES.includes(req.params.table)) {
-      return res.status(400).json({ error: "Unknown table." });
-    }
-    const restored = await restoreRow(req.params.table, req.params.id);
-    if (!restored) return res.status(404).json({ error: "Not found in trash." });
-    recordProjectActivity(req, req.params.table, "restored_from_trash", null, restored);
-    res.json(restored);
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.delete("/api/trash/:table/:id", requireAuth, async (req, res, next) => {
-  try {
-    if (!TABLES.includes(req.params.table)) {
-      return res.status(400).json({ error: "Unknown table." });
-    }
-    // Only admins can permanently delete items
-    if (!["super_admin", "admin"].includes(req.userRole)) {
-      return res.status(403).json({ error: "Only administrators can permanently delete items from Trash." });
-    }
-    const dbInstance = getDB();
-    const existing = await dbInstance.collection(req.params.table).findOne({ id: req.params.id });
-    const removed = await deleteRow(req.params.table, req.params.id);
-    if (!removed) return res.status(404).json({ error: "Not found." });
-
-    // If a document was permanently deleted, clean up its GridFS file
-    if (req.params.table === "documents" && existing?.file_id && ObjectId.isValid(existing.file_id)) {
-      filesBucket()
-        .delete(new ObjectId(existing.file_id))
-        .catch((err) => console.error("[files] failed to delete stored file:", err.message));
-    }
-
-    res.status(204).end();
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.post("/api/trash/empty", requireAuth, async (req, res, next) => {
-  try {
-    if (!["super_admin", "admin"].includes(req.userRole)) {
-      return res.status(403).json({ error: "Only administrators can empty the Trash." });
-    }
-    const count = await purgeOldTrash(0); // 0 days means purge all deleted items
-    res.json({ message: `Trash emptied (${count} items removed).`, purged: count });
   } catch (err) {
     next(err);
   }
