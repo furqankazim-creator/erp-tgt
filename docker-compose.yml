@@ -6,6 +6,10 @@ services:
     env_file: ./server/.env
     environment:
       - PORT=4000
+      - NODE_ENV=production
+      - CORS_ORIGINS=https://crm.tgailab.site
+      # client -> caa-nginx -> web nginx -> api: two proxies in front of the API
+      - TRUST_PROXY=2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

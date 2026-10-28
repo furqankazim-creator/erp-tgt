@@ -9,6 +9,7 @@ RUN npm run build
 
 # ---- Stage 2: API server ----
 FROM node:22-alpine AS api
+ENV NODE_ENV=production
 WORKDIR /app
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev

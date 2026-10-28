@@ -2,6 +2,10 @@ node_modules
 server/node_modules
 .git
 .env
+**/.env
+.env.*
+**/.env.*
+!server/.env.example
 *.md
 docs
 .vscode

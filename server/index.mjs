@@ -60,7 +60,7 @@ const PORT = process.env.PORT || 5000;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 const app = express();
-app.set("trust proxy", 1); // behind nginx/Docker: use the real client IP for rate limiting
+app.set("trust proxy", Number(process.env.TRUST_PROXY ?? 1)); // behind nginx/Docker: use the real client IP for rate limiting
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
 // CORS_ORIGINS="https://erp.example.com,https://www.example.com". Unset in
