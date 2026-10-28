@@ -161,20 +161,46 @@ export async function deleteRow(table, id) {
   return result.deletedCount > 0;
 }
 
-export async function softDeleteRow(table, id, deletedBy) {
+const ADMIN_ROLES = ["super_admin", "admin"];
+
+// Each portal only sees its own trash: admins see what admins deleted, anyone
+// else sees only what they deleted themselves. Items trashed before this
+// split (no deleted_by_role) are treated as admin-owned.
+export function trashScope(role, userId) {
+  if (ADMIN_ROLES.includes(role)) {
+    return {
+      deleted_at: { $exists: true },
+      $or: [
+        { deleted_by_role: { $in: ADMIN_ROLES } },
+        { deleted_by_role: { $exists: false } },
+      ],
+    };
+  }
+  return { deleted_at: { $exists: true }, deleted_by_id: userId ?? "__none__" };
+}
+
+export async function softDeleteRow(table, id, deletedBy, deletedByRole = null, deletedById = null) {
   const now = new Date().toISOString();
   const result = await db.collection(table).findOneAndUpdate(
     { id },
-    { $set: { deleted_at: now, deleted_by: deletedBy } },
+    {
+      $set: {
+        deleted_at: now,
+        deleted_by: deletedBy,
+        deleted_by_role: deletedByRole,
+        deleted_by_id: deletedById,
+      },
+    },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   return result;
 }
 
-export async function restoreRow(table, id) {
+// Restores only if the row is in the caller's own trash.
+export async function restoreRow(table, id, scope = {}) {
   const result = await db.collection(table).findOneAndUpdate(
-    { id },
-    { $unset: { deleted_at: "", deleted_by: "" } },
+    { id, ...scope },
+    { $unset: { deleted_at: "", deleted_by: "", deleted_by_role: "", deleted_by_id: "" } },
     { returnDocument: "after", projection: { _id: 0 } },
   );
   return result;
@@ -188,12 +214,12 @@ export async function listTrash(table) {
     .toArray();
 }
 
-export async function listAllTrash() {
+export async function listAllTrash(scope = { deleted_at: { $exists: true } }) {
   const results = [];
   for (const table of TABLES) {
     const rows = await db
       .collection(table)
-      .find({ deleted_at: { $exists: true } }, { projection: { _id: 0 } })
+      .find(scope, { projection: { _id: 0 } })
       .sort({ deleted_at: -1 })
       .toArray();
     for (const row of rows) {
@@ -204,7 +230,7 @@ export async function listAllTrash() {
   return results;
 }
 
-export async function purgeOldTrash(daysOld = 30) {
+export async function purgeOldTrash(daysOld = 30, scope = {}) {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - daysOld);
   const cutoffIso = cutoff.toISOString();
@@ -212,7 +238,7 @@ export async function purgeOldTrash(daysOld = 30) {
   for (const table of TABLES) {
     const result = await db
       .collection(table)
-      .deleteMany({ deleted_at: { $exists: true, $lt: cutoffIso } });
+      .deleteMany({ ...scope, deleted_at: { $exists: true, $lt: cutoffIso } });
     total += result.deletedCount;
   }
   return total;

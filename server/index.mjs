@@ -24,6 +24,7 @@ import {
   softDeleteRow,
   restoreRow,
   listAllTrash,
+  trashScope,
   purgeOldTrash,
   nextDisplayId,
   nextSequence,
@@ -1423,7 +1424,7 @@ app.delete("/api/scope_items/:id", requireAuth, async (req, res, next) => {
         .json({ error: `${before.code} is part of a change request's history — raise a Removal instead.` });
     }
     const actor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? "System";
-    await softDeleteRow("scope_items", before.id, actor);
+    await softDeleteRow("scope_items", before.id, actor, req.userRole, req.userId);
     res.status(204).end();
     recordProjectActivity(req, "scope_items", "deleted", before, null);
   } catch (err) {
@@ -1571,7 +1572,7 @@ app.delete("/api/scope_change_requests/:id", requireAuth, async (req, res, next)
       return res.status(403).json({ error: "You can only withdraw your own pending requests." });
     }
     const deleteActor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? actor ?? "System";
-    await softDeleteRow("scope_change_requests", before.id, deleteActor);
+    await softDeleteRow("scope_change_requests", before.id, deleteActor, req.userRole, req.userId);
     res.status(204).end();
     recordProjectActivity(req, "scope_change_requests", "deleted", before, null);
   } catch (err) {
@@ -1582,7 +1583,7 @@ app.delete("/api/scope_change_requests/:id", requireAuth, async (req, res, next)
 // ── Trash / Recycle Bin (must be defined before /api/:table) ───────────
 app.get("/api/trash", requireAuth, async (req, res, next) => {
   try {
-    const items = await listAllTrash();
+    const items = await listAllTrash(trashScope(req.userRole, req.userId));
     res.json(items);
   } catch (err) {
     next(err);
@@ -1591,10 +1592,8 @@ app.get("/api/trash", requireAuth, async (req, res, next) => {
 
 app.post("/api/trash/empty", requireAuth, async (req, res, next) => {
   try {
-    if (!["super_admin", "admin"].includes(req.userRole)) {
-      return res.status(403).json({ error: "Only administrators can empty the Trash." });
-    }
-    const count = await purgeOldTrash(0); // 0 days means purge all deleted items
+    // Scoped per role: admins clear admin-trashed items, everyone else only their own.
+    const count = await purgeOldTrash(0, trashScope(req.userRole, req.userId)); // 0 days means purge all deleted items
     res.json({ message: `Trash emptied (${count} items removed).`, purged: count });
   } catch (err) {
     next(err);
@@ -1606,7 +1605,7 @@ app.post("/api/trash/:table/:id/restore", requireAuth, async (req, res, next) =>
     if (!TABLES.includes(req.params.table)) {
       return res.status(400).json({ error: "Unknown table." });
     }
-    const restored = await restoreRow(req.params.table, req.params.id);
+    const restored = await restoreRow(req.params.table, req.params.id, trashScope(req.userRole, req.userId));
     if (!restored) return res.status(404).json({ error: "Not found in trash." });
     recordProjectActivity(req, req.params.table, "restored_from_trash", null, restored);
     res.json(restored);
@@ -1625,7 +1624,10 @@ app.delete("/api/trash/:table/:id", requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: "Only administrators can permanently delete items from Trash." });
     }
     const dbInstance = getDB();
-    const existing = await dbInstance.collection(req.params.table).findOne({ id: req.params.id });
+    const existing = await dbInstance
+      .collection(req.params.table)
+      .findOne({ id: req.params.id, ...trashScope(req.userRole, req.userId) });
+    if (!existing) return res.status(404).json({ error: "Not found." });
     const removed = await deleteRow(req.params.table, req.params.id);
     if (!removed) return res.status(404).json({ error: "Not found." });
 
@@ -2534,7 +2536,7 @@ app.delete("/api/:table/:id", requireTable, requireAuth, requireAdminForMoneyWri
       if (scoped.length === 0) return res.status(404).json({ error: "Not found" });
     }
     const actor = (await resolveActorName(req.userId)) ?? req.userFullName ?? req.userEmail ?? "System";
-    const removed = await softDeleteRow(req.params.table, req.params.id, actor);
+    const removed = await softDeleteRow(req.params.table, req.params.id, actor, req.userRole, req.userId);
     if (!removed) return res.status(404).json({ error: "Not found" });
     res.status(204).end();
     recordProjectActivity(req, req.params.table, "moved_to_trash", existing, null);

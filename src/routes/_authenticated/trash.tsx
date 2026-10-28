@@ -126,11 +126,11 @@ function getDaysRemaining(deletedAtIso?: string): number {
 }
 
 function TrashPage() {
-  const { data: items = [], isLoading } = useTrashRows();
+  const { data: items = [], isLoading, isFetching, refetch } = useTrashRows();
   const restoreMutation = useRestoreRow();
   const deleteMutation = usePermanentDeleteRow();
   const emptyTrashMutation = useEmptyTrash();
-  const currentUser = useCurrentUser();
+  const { data: currentUser } = useCurrentUser();
 
   const [search, setSearch] = useState("");
   const [selectedModule, setSelectedModule] = useState<string>("all");
@@ -171,9 +171,20 @@ function TrashPage() {
     <div className="space-y-6">
       <PageHeader
         title="Trash"
-        description="Records removed from any tab are kept here for 30 days before automatic deletion. You can restore records back to their original location anytime."
+        description="Records you remove from any tab are kept in your own trash for 30 days before automatic deletion. You can restore your records anytime."
         action={
-          items.length > 0 && isAdmin ? (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => void refetch()}
+              disabled={isFetching}
+            >
+              <RotateCcw className={cn("size-4", isFetching && "animate-spin")} />
+              Refresh
+            </Button>
+            {items.length > 0 ? (
             <AlertDialog open={emptyDialogOpen} onOpenChange={setEmptyDialogOpen}>
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" size="sm" className="gap-2">
@@ -185,7 +196,7 @@ function TrashPage() {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Empty Trash permanently?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    This will permanently delete all {items.length} items in the Trash. This action cannot be undone.
+                    This will permanently delete all {items.length} items in your Trash. This action cannot be undone.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
@@ -199,28 +210,29 @@ function TrashPage() {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
-          ) : null
+            ) : null}
+          </div>
         }
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           label="Items in Trash"
-          value={items.length}
+          value={String(items.length)}
           icon={Trash2}
-          subtext={items.length === 0 ? "Trash is clean" : `${filteredItems.length} matching search`}
+          hint={items.length === 0 ? "Trash is clean" : `${filteredItems.length} matching search`}
         />
         <KpiCard
           label="Auto-Purge Policy"
           value="30 Days"
           icon={Clock}
-          subtext="Items automatically delete after 1 month"
+          hint="Items automatically delete after 1 month"
         />
         <KpiCard
           label="Modules Affected"
-          value={Object.keys(moduleCounts).length}
+          value={String(Object.keys(moduleCounts).length)}
           icon={Layers}
-          subtext="Different tabs with deleted items"
+          hint="Different tabs with deleted items"
         />
       </div>
 
