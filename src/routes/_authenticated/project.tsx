@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 
 import type { Field } from "@/components/record-dialog";
+import { AddScopeFileDialog } from "@/components/project-tabs/scope-tab";
 
 export const Route = createFileRoute("/_authenticated/project")({
   component: () => <Outlet />,
@@ -47,7 +48,13 @@ export function buildProjectFields(accountNames: string[]): Field[] {
     { name: "cost", label: "Cost to date (USD)", type: "number" },
     { name: "revenue", label: "Revenue recognized (USD)", type: "number" },
     { name: "tags", label: "Tags (comma separated)", type: "tags", full: true, section: "Details" },
-    { name: "description", label: "Scope", type: "textarea", full: true },
+    { 
+      name: "description", 
+      label: "Scope", 
+      type: "textarea", 
+      full: true,
+      action: (record) => record?.id ? <AddScopeFileDialog projectId={record.id} projectName={record.name as string} /> : <span className="text-xs text-muted-foreground">Save project first to attach files</span>
+    },
     { name: "live_url", label: "Live app URL", full: true, placeholder: "https://…" },
     {
       name: "repo_url",

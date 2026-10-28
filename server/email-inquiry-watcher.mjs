@@ -314,6 +314,12 @@ export async function runEmailInquiryWatcher() {
     auth: { user: IMAP_USER, pass: IMAP_PASSWORD },
     logger: false,
   });
+  // ImapFlow emits socket failures (e.g. a timeout after a failed connect)
+  // as an 'error' event; with no listener Node treats that as an uncaught
+  // exception and takes the whole API server down with it.
+  client.on("error", (err) => {
+    console.error("[email watcher] IMAP error:", err.message);
+  });
   try {
     await client.connect();
   } catch (err) {

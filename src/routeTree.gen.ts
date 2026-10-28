@@ -50,6 +50,7 @@ import { Route as AuthenticatedSettingsRouteImport } from './routes/_authenticat
 import { Route as AuthenticatedStrategyRouteImport } from './routes/_authenticated/strategy'
 import { Route as AuthenticatedTeamsRouteImport } from './routes/_authenticated/teams'
 import { Route as AuthenticatedTrainingRouteImport } from './routes/_authenticated/training'
+import { Route as FeedbackTokenRouteImport } from './routes/feedback.$token'
 import { Route as TrackInquiryIdRouteImport } from './routes/track.$inquiryId'
 import { Route as AuthenticatedAccountsIndexRouteImport } from './routes/_authenticated/accounts.index'
 import { Route as AuthenticatedAccountsAccountIdRouteImport } from './routes/_authenticated/accounts.$accountId'
@@ -275,6 +276,11 @@ const AuthenticatedTrainingRoute = AuthenticatedTrainingRouteImport.update({
   path: '/training',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const FeedbackTokenRoute = FeedbackTokenRouteImport.update({
+  id: '/feedback/$token',
+  path: '/feedback/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TrackInquiryIdRoute = TrackInquiryIdRouteImport.update({
   id: '/track/$inquiryId',
   path: '/track/$inquiryId',
@@ -388,6 +394,7 @@ export interface FileRoutesByFullPath {
   '/strategy': typeof AuthenticatedStrategyRoute
   '/teams': typeof AuthenticatedTeamsRoute
   '/training': typeof AuthenticatedTrainingRoute
+  '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
   '/estimations/$quoteId': typeof AuthenticatedEstimationsQuoteIdRoute
@@ -437,6 +444,7 @@ export interface FileRoutesByTo {
   '/strategy': typeof AuthenticatedStrategyRoute
   '/teams': typeof AuthenticatedTeamsRoute
   '/training': typeof AuthenticatedTrainingRoute
+  '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
   '/estimations/$quoteId': typeof AuthenticatedEstimationsQuoteIdRoute
@@ -493,6 +501,7 @@ export interface FileRoutesById {
   '/_authenticated/strategy': typeof AuthenticatedStrategyRoute
   '/_authenticated/teams': typeof AuthenticatedTeamsRoute
   '/_authenticated/training': typeof AuthenticatedTrainingRoute
+  '/feedback/$token': typeof FeedbackTokenRoute
   '/track/$inquiryId': typeof TrackInquiryIdRoute
   '/_authenticated/accounts/$accountId': typeof AuthenticatedAccountsAccountIdRoute
   '/_authenticated/estimations/$quoteId': typeof AuthenticatedEstimationsQuoteIdRoute
@@ -549,6 +558,7 @@ export interface FileRouteTypes {
     | '/strategy'
     | '/teams'
     | '/training'
+    | '/feedback/$token'
     | '/track/$inquiryId'
     | '/accounts/$accountId'
     | '/estimations/$quoteId'
@@ -598,6 +608,7 @@ export interface FileRouteTypes {
     | '/strategy'
     | '/teams'
     | '/training'
+    | '/feedback/$token'
     | '/track/$inquiryId'
     | '/accounts/$accountId'
     | '/estimations/$quoteId'
@@ -653,6 +664,7 @@ export interface FileRouteTypes {
     | '/_authenticated/strategy'
     | '/_authenticated/teams'
     | '/_authenticated/training'
+    | '/feedback/$token'
     | '/track/$inquiryId'
     | '/_authenticated/accounts/$accountId'
     | '/_authenticated/estimations/$quoteId'
@@ -673,6 +685,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   InquireRoute: typeof InquireRoute
   PmConnectRoute: typeof PmConnectRoute
+  FeedbackTokenRoute: typeof FeedbackTokenRoute
   TrackInquiryIdRoute: typeof TrackInquiryIdRoute
 }
 
@@ -965,6 +978,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTrainingRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/feedback/$token': {
+      id: '/feedback/$token'
+      path: '/feedback/$token'
+      fullPath: '/feedback/$token'
+      preLoaderRoute: typeof FeedbackTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/track/$inquiryId': {
       id: '/track/$inquiryId'
       path: '/track/$inquiryId'
@@ -1219,6 +1239,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   InquireRoute: InquireRoute,
   PmConnectRoute: PmConnectRoute,
+  FeedbackTokenRoute: FeedbackTokenRoute,
   TrackInquiryIdRoute: TrackInquiryIdRoute,
 }
 export const routeTree = rootRouteImport

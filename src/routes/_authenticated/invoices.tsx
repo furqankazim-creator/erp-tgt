@@ -22,6 +22,12 @@ import { DeleteButton } from "@/components/delete-button";
 import { TableSkeleton } from "@/components/loading";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  type InvoiceAccountOption,
+  type InvoiceProjectOption,
+  SendInvoiceDialog,
+  buildInvoiceFields,
+} from "@/components/invoice-shared";
 
 export const Route = createFileRoute("/_authenticated/invoices")({
   head: () => ({
@@ -55,6 +61,7 @@ type Invoice = {
   issue_date: string | null;
   due_date: string | null;
   notes: string | null;
+  sent_to?: string | null;
 };
 
 type Payment = {
@@ -67,10 +74,9 @@ type Payment = {
   notes: string | null;
 };
 
-type ProjectRow = { id: string; name: string; client: string | null };
-type Account = { id: string; name: string };
+type ProjectRow = InvoiceProjectOption;
+type Account = InvoiceAccountOption;
 
-const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
 const PAYMENT_METHODS = ["Bank Transfer", "Credit Card", "Cash", "Cheque", "Other"];
 const OPEN_STATUSES = ["Draft", "Sent", "Overdue"];
 
@@ -81,24 +87,6 @@ const METHOD_ICON: Record<string, typeof Landmark> = {
   Cheque: FileText,
   Other: MoreHorizontal,
 };
-
-function buildInvoiceFields(projects: ProjectRow[], accounts: Account[]): Field[] {
-  return [
-    { name: "invoice_number", label: "Invoice #", required: true, placeholder: "INV-1001" },
-    { name: "client", label: "Client", type: "select", options: accounts.map((a) => a.name) },
-    {
-      name: "project_id",
-      label: "Project (optional)",
-      type: "select",
-      options: projects.map((p) => ({ value: p.id, label: p.name })),
-    },
-    { name: "amount", label: "Amount (USD)", type: "number", required: true },
-    { name: "status", label: "Status", type: "select", options: INVOICE_STATUSES },
-    { name: "issue_date", label: "Issue date", type: "date" },
-    { name: "due_date", label: "Due date", type: "date" },
-    { name: "notes", label: "Notes", type: "textarea", full: true },
-  ];
-}
 
 function paymentFields(): Field[] {
   return [
@@ -283,6 +271,7 @@ function InvoicesPage() {
                                 </Button>
                               }
                             />
+                            <SendInvoiceDialog invoice={inv} />
                             <DeleteButton
                               table="invoices"
                               id={inv.id}

@@ -82,6 +82,9 @@ export async function connectDB() {
   await db
     .collection("meetings")
     .updateMany({ project_id: { $exists: false } }, { $set: { project_id: null } });
+  await db
+    .collection("documents")
+    .updateMany({ drive_link: { $exists: false } }, { $set: { drive_link: null } });
 
   console.log(`Connected to MongoDB at ${MONGO_URL} (db "${DB_NAME}")`);
 }
@@ -167,6 +170,16 @@ export async function nextDisplayId(prefix) {
       { upsert: true, returnDocument: "after" },
     );
   return `${prefix}-${year}-${String(result.seq).padStart(5, "0")}`;
+}
+
+// A plain atomic counter under an arbitrary key — same $inc-with-upsert as
+// nextDisplayId, but never resets, for per-record numbering like a
+// project's scope items (S1, S2, …).
+export async function nextSequence(key) {
+  const result = await db
+    .collection("counters")
+    .findOneAndUpdate({ _id: key }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: "after" });
+  return result.seq;
 }
 
 export async function findUserByEmail(email) {

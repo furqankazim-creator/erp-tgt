@@ -1,30 +1,23 @@
-import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { Send } from "lucide-react";
-import { toast } from "sonner";
+import { Plus } from "lucide-react";
 
-import { callApi, useRows } from "@/lib/db";
+import { useRows } from "@/lib/db";
 import { currency, dateLabel } from "@/lib/format";
 import { StatusBadge } from "@/components/status-badge";
 import { TableSkeleton, EmptyState } from "@/components/loading";
+import { RecordDialog } from "@/components/record-dialog";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
+  type InvoiceAccountOption,
+  type InvoiceProjectOption,
+  SendInvoiceDialog,
+  buildInvoiceFields,
+  useIsInvoiceAdmin,
+} from "@/components/invoice-shared";
+import type { Project } from "@/routes/_authenticated/project";
 
-// Developers are explicitly allowed to send invoices for their own projects
-// (confirmed override of docs/developer-dashboard-modules-plan.md §12's
-// admin/salesman-only recommendation). The server route
-// (POST /api/invoices/:id/send) re-checks the developer role and re-scopes
-// the invoice to their own projects — this button is UX, not the boundary.
+// Invoices are raised and emailed to the client by an Admin only. Everyone
+// else on the project sees them here read-only, including whether and when
+// each one went out. The server enforces the same rule.
 type Invoice = {
   id: string;
   invoice_number: string;
@@ -35,82 +28,58 @@ type Invoice = {
   issue_date: string | null;
   due_date: string | null;
   sent_to?: string | null;
+  sent_at?: string | null;
+  sent_by?: string | null;
 };
-type Account = { id: string; name: string; email?: string | null };
 
-function SendInvoiceDialog({ invoice, defaultEmail }: { invoice: Invoice; defaultEmail: string }) {
-  const [open, setOpen] = useState(false);
-  const [to, setTo] = useState(defaultEmail);
-  const [sending, setSending] = useState(false);
-  const qc = useQueryClient();
-
-  async function send() {
-    if (!to.trim()) {
-      toast.error("Add a recipient email.");
-      return;
-    }
-    setSending(true);
-    try {
-      await callApi(`/invoices/${invoice.id}/send`, {
-        method: "POST",
-        body: JSON.stringify({ to }),
-      });
-      await qc.invalidateQueries({ queryKey: ["invoices"] });
-      toast.success(`Invoice ${invoice.invoice_number} sent`);
-      setOpen(false);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to send invoice");
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Send className="size-3.5" /> Send
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Send invoice {invoice.invoice_number}</DialogTitle>
-          <DialogDescription>Emails the invoice to the client and marks it Sent.</DialogDescription>
-        </DialogHeader>
-        <div>
-          <Label className="mb-1.5 block text-xs font-semibold">Recipient email</Label>
-          <Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="client@example.com" />
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button onClick={send} disabled={sending}>
-            {sending ? "Sending…" : "Send invoice"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export function SendInvoiceTab({ projectId }: { projectId: string }) {
+export function SendInvoiceTab({ project }: { projectId: string; project: Project }) {
+  const isAdmin = useIsInvoiceAdmin();
   const { data: invoiceRows, isLoading } = useRows<Invoice>("invoices");
-  const { data: accountRows } = useRows<Account>("accounts");
+  const { data: projectRows } = useRows<InvoiceProjectOption>("projects");
+  const { data: accountRows } = useRows<InvoiceAccountOption>("accounts");
 
-  const invoices = (invoiceRows ?? []).filter((inv) => inv.project_id === projectId);
-  const accounts = accountRows ?? [];
-
-  function clientEmail(client: string | null) {
-    return accounts.find((a) => a.name === client)?.email ?? "";
-  }
+  const invoices = (invoiceRows ?? []).filter((inv) => inv.project_id === project.id);
+  const fields = buildInvoiceFields(projectRows ?? [], accountRows ?? []);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {isAdmin
+            ? "Raise an invoice for this project and email it to the client."
+            : "Invoices are raised and sent to the client by an Admin. You can see their status here."}
+        </p>
+        {isAdmin && (
+          <RecordDialog
+            table="invoices"
+            label="Invoice"
+            fields={fields}
+            defaults={{
+              status: "Draft",
+              project_id: project.id,
+              client: project.client ?? "",
+              issue_date: new Date().toISOString().slice(0, 10),
+            }}
+            trigger={
+              <Button size="sm">
+                <Plus className="size-4" /> New invoice
+              </Button>
+            }
+          />
+        )}
+      </div>
+
       {isLoading ? (
         <TableSkeleton />
       ) : invoices.length === 0 ? (
-        <EmptyState title="No invoices yet" description="No invoices have been raised for this project." />
+        <EmptyState
+          title="No invoices yet"
+          description={
+            isAdmin
+              ? 'No invoices have been raised for this project. Use "New invoice" to create one.'
+              : "No invoices have been raised for this project yet."
+          }
+        />
       ) : (
         <div className="surface-card overflow-x-auto">
           <table className="w-full text-sm">
@@ -135,9 +104,30 @@ export function SendInvoiceTab({ projectId }: { projectId: string }) {
                   <td className="px-4 py-3 font-semibold">{currency(inv.amount, true)}</td>
                   <td className="px-4 py-3">
                     <StatusBadge value={inv.status} />
+                    {inv.sent_at && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        Sent to {inv.sent_to} · {dateLabel(inv.sent_at)}
+                        {inv.sent_by ? ` by ${inv.sent_by}` : ""}
+                      </p>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <SendInvoiceDialog invoice={inv} defaultEmail={clientEmail(inv.client)} />
+                    {isAdmin ? (
+                      <div className="flex justify-end gap-1">
+                        <RecordDialog
+                          table="invoices"
+                          label="Invoice"
+                          fields={fields}
+                          record={inv}
+                          trigger={
+                            <Button variant="ghost" size="sm">
+                              Edit
+                            </Button>
+                          }
+                        />
+                        <SendInvoiceDialog invoice={inv} />
+                      </div>
+                    ) : null}
                   </td>
                 </tr>
               ))}

@@ -68,6 +68,8 @@ import { ScopeTab } from "@/components/project-tabs/scope-tab";
 import { SprintPlanningTab } from "@/components/project-tabs/sprint-planning-tab";
 import { SprintsBoardTab } from "@/components/project-tabs/sprints-board-tab";
 import { QaBugsTab } from "@/components/project-tabs/qa-bugs-tab";
+import { ImportCommitsDialog } from "@/components/project-tabs/import-commits-dialog";
+import { OpenDocumentButton, UploadDocumentDialog } from "@/components/document-upload";
 import { AuditReportTab } from "@/components/project-tabs/audit-report-tab";
 import { ClientFeedbackTab } from "@/components/project-tabs/client-feedback-tab";
 import { RepositoriesTab } from "@/components/project-tabs/repositories-tab";
@@ -141,6 +143,7 @@ type PmCommit = {
   files_changed: string[];
   employee: string | null;
   created_at: string;
+  imported?: boolean;
 };
 
 type PmDailyLog = {
@@ -157,8 +160,6 @@ const TASK_STATUSES = ["To Do", "In Progress", "Review", "Done"];
 const PRIORITIES = ["Low", "Medium", "High", "Critical"];
 const MILESTONE_STATUSES = ["Upcoming", "In Progress", "Completed", "Missed"];
 const DELIVERABLE_STATUSES = ["Pending", "In Progress", "Delivered", "Approved"];
-const DOC_FILE_TYPES = ["pdf", "xlsx", "docx", "png", "csv", "zip"];
-
 const TASK_FIELDS: Field[] = [
   { name: "title", label: "Task title", required: true, full: true },
   { name: "priority", label: "Priority", type: "select", options: PRIORITIES },
@@ -180,12 +181,13 @@ const DELIVERABLE_FIELDS: Field[] = [
   { name: "notes", label: "Notes", type: "textarea", full: true },
 ];
 
+// Type and size come from the uploaded file itself, so only the details a
+// person decides are editable here.
 function documentEditFields(employees: Employee[]): Field[] {
   return [
     { name: "name", label: "File name", required: true, full: true },
-    { name: "file_type", label: "File type", type: "select", options: DOC_FILE_TYPES },
-    { name: "size_kb", label: "Size (KB)", type: "number" },
     { name: "owner", label: "Owner", type: "select", options: employees.map((e) => e.name) },
+    { name: "drive_link", label: "Google Drive link", full: true },
   ];
 }
 
@@ -463,113 +465,6 @@ function AddDeliverableDialog({ projectId }: { projectId: string }) {
   );
 }
 
-function AddProjectDocumentDialog({
-  projectId,
-  projectName,
-  employees,
-}: {
-  projectId: string;
-  projectName: string;
-  employees: Employee[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [fileType, setFileType] = useState("pdf");
-  const [sizeKb, setSizeKb] = useState("100");
-  const [owner, setOwner] = useState("");
-  const save = useSaveRow("documents", "Document");
-
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    save.mutate(
-      {
-        project_id: projectId,
-        name,
-        folder: projectName,
-        file_type: fileType,
-        size_kb: sizeKb === "" ? 0 : Number(sizeKb),
-        owner: owner || null,
-      },
-      {
-        onSuccess: () => {
-          setOpen(false);
-          setName("");
-          setSizeKb("100");
-          setOwner("");
-        },
-      },
-    );
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">
-          <Plus className="size-4" /> Upload document
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>New document</DialogTitle>
-          <DialogDescription>Filed under &ldquo;{projectName}&rdquo;.</DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className="grid gap-4">
-          <div>
-            <Label htmlFor="doc-name" className="mb-1.5 block text-xs font-semibold">
-              File name
-            </Label>
-            <Input id="doc-name" required value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <Label className="mb-1.5 block text-xs font-semibold">File type</Label>
-              <Select value={fileType} onValueChange={setFileType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DOC_FILE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="mb-1.5 block text-xs font-semibold">Size (KB)</Label>
-              <Input type="number" value={sizeKb} onChange={(e) => setSizeKb(e.target.value)} />
-            </div>
-          </div>
-          <div>
-            <Label className="mb-1.5 block text-xs font-semibold">Owner</Label>
-            <Select value={owner} onValueChange={setOwner}>
-              <SelectTrigger>
-                <SelectValue placeholder="Unassigned" />
-              </SelectTrigger>
-              <SelectContent>
-                {employees.map((e) => (
-                  <SelectItem key={e.id} value={e.name}>
-                    {e.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Uploading…" : "Upload"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function ProjectDetail() {
   const { projectId } = useParams({ from: "/_authenticated/project/$projectId" });
   const project = useRow<Project>("projects", projectId);
@@ -633,6 +528,14 @@ function ProjectDetail() {
   const assigneeOptions = teamEmployees.length ? teamEmployees : allEmployees;
   const PROJECT_FIELDS = buildProjectFields((accounts.data ?? []).map((a) => a.name));
 
+  const myEmployeeName = (employees.data ?? []).find(
+    (e) => e.email && me?.email && e.email.toLowerCase() === me.email.toLowerCase(),
+  )?.name;
+  const canImportCommits =
+    me?.access_role === "super_admin" ||
+    me?.access_role === "admin" ||
+    Boolean(myEmployeeName && p.manager === myEmployeeName);
+
   const projectCommits = (pmCommits.data ?? [])
     .filter((c) => c.project_id === p.id)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -676,8 +579,10 @@ function ProjectDetail() {
   const teamNames = [...new Set([...(p.team ?? []), ...(p.manager ? [p.manager] : [])])];
   const connectionStatus = teamNames.map((name) => {
     const emp = allEmployees.find((e) => e.name === name);
-    const memberLogs = projectDailyLogs.filter((d) => d.employee === name);
-    const memberCommits = projectCommits.filter((c) => c.employee === name);
+    const memberLogs = projectDailyLogs.filter((d) => d.employee === name && d.active_seconds > 0);
+    // Imported history says nothing about whether the extension is set up
+    // now — only what it reported live counts as "connected".
+    const memberCommits = projectCommits.filter((c) => c.employee === name && !c.imported);
     const hasActivity = memberLogs.length > 0 || memberCommits.length > 0;
     const lastLogAt = memberLogs.length
       ? Math.max(...memberLogs.map((l) => new Date(l.updated_at).getTime()))
@@ -1142,10 +1047,16 @@ function ProjectDetail() {
 
             <TabsContent value="documents">
               <div className="mb-4 flex justify-end">
-                <AddProjectDocumentDialog
+                <UploadDocumentDialog
                   projectId={p.id}
-                  projectName={p.name}
-                  employees={allEmployees}
+                  folder={p.name}
+                  owners={allEmployees.map((e) => e.name)}
+                  description={`Filed under “${p.name}”. Upload a file (up to 25 MB), or link one from Google Drive.`}
+                  trigger={
+                    <Button size="sm">
+                      <Plus className="size-4" /> Upload document
+                    </Button>
+                  }
                 />
               </div>
               {documents.isLoading ? (
@@ -1183,6 +1094,7 @@ function ProjectDetail() {
                             <td className="px-4 py-3 text-muted-foreground">{d.owner ?? "—"}</td>
                             <td className="px-4 py-3">
                               <div className="flex justify-end gap-1">
+                                <OpenDocumentButton doc={d} />
                                 <RecordDialog
                                   table="documents"
                                   label="Document"
@@ -1365,7 +1277,17 @@ function ProjectDetail() {
               </div>
 
               <div className="surface-card p-5">
-                <h3 className="font-semibold">Recent commits</h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-semibold">Recent commits</h3>
+                    {projectCommits.length > 20 && (
+                      <p className="text-xs text-muted-foreground">
+                        Latest 20 of {projectCommits.length}
+                      </p>
+                    )}
+                  </div>
+                  {canImportCommits && <ImportCommitsDialog projectId={p.id} />}
+                </div>
                 {pmCommits.isLoading ? (
                   <TableSkeleton rows={3} />
                 ) : projectCommits.length === 0 ? (
@@ -1384,6 +1306,7 @@ function ProjectDetail() {
                           <p className="text-xs text-muted-foreground">
                             {c.employee ?? "Unknown"} · {c.commit_sha.slice(0, 8)} ·{" "}
                             {c.files_changed?.length ?? 0} files · {dateTimeLabel(c.created_at)}
+                            {c.imported ? " · imported from git history" : ""}
                           </p>
                         </div>
                       </li>
@@ -1421,11 +1344,11 @@ function ProjectDetail() {
             </TabsContent>
 
             <TabsContent value="qa-bugs">
-              <QaBugsTab projectId={p.id} />
+              <QaBugsTab projectId={p.id} project={p} />
             </TabsContent>
 
             <TabsContent value="audit-report">
-              <AuditReportTab projectId={p.id} />
+              <AuditReportTab projectId={p.id} project={p} />
             </TabsContent>
 
             <TabsContent value="client-feedback">
@@ -1445,7 +1368,7 @@ function ProjectDetail() {
             </TabsContent>
 
             <TabsContent value="send-invoice">
-              <SendInvoiceTab projectId={p.id} />
+              <SendInvoiceTab projectId={p.id} project={p} />
             </TabsContent>
 
             <TabsContent value="meeting-minutes">

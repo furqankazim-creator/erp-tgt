@@ -47,6 +47,7 @@ export type Field = {
   full?: boolean;
   rows?: number;
   section?: string;
+  action?: (record?: Row & { id?: string }) => ReactNode;
 };
 
 function normalizeOptions(options: SelectOption[]): { value: string; label: string }[] {
@@ -176,13 +177,16 @@ export function RecordDialog({
                   </div>
                 )}
                 <div className={field.full || field.type === "textarea" ? "" : ""}>
-                  <Label
-                    htmlFor={field.name}
-                    className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/85"
-                  >
-                    {field.label}
-                    {field.required && <span className="text-destructive ml-1">*</span>}
-                  </Label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <Label
+                      htmlFor={field.name}
+                      className="block text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/85"
+                    >
+                      {field.label}
+                      {field.required && <span className="text-destructive ml-1">*</span>}
+                    </Label>
+                    {field.action ? field.action(record) : null}
+                  </div>
                   {field.type === "textarea" ? (
                     <Textarea
                       id={field.name}

@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
-  Download,
   File,
   FileImage,
   FileSpreadsheet,
@@ -10,7 +9,6 @@ import {
   HardDrive,
   Upload,
 } from "lucide-react";
-import { toast } from "sonner";
 
 import { useRows } from "@/lib/db";
 import { useCurrentUser } from "@/lib/mock-auth";
@@ -22,6 +20,7 @@ import { DeleteButton } from "@/components/delete-button";
 import { TableSkeleton, EmptyState } from "@/components/loading";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { OpenDocumentButton, UploadDocumentDialog } from "@/components/document-upload";
 
 export const Route = createFileRoute("/_authenticated/documents")({
   head: () => ({
@@ -45,11 +44,12 @@ export type Document = {
   size_kb: number;
   owner: string | null;
   project_id: string | null;
+  drive_link: string | null;
+  file_id?: string | null;
 };
 type Employee = { id: string; name: string; email: string | null };
 type ProjectRow = { id: string; name: string };
 
-const FILE_TYPES = ["pdf", "xlsx", "docx", "png", "csv", "zip"];
 
 export function fileIcon(type: string | null) {
   switch (type) {
@@ -99,16 +99,12 @@ function Page() {
     return [...map.entries()].sort((a, b) => b[1] - a[1]);
   }, [docs]);
 
+  const folderNames = folders.map(([f]) => f).length ? folders.map(([f]) => f) : ["General"];
+
+  // Edit form only — type and size come from the uploaded file itself.
   const FIELDS: Field[] = [
     { name: "name", label: "File name", required: true, full: true },
-    {
-      name: "folder",
-      label: "Folder",
-      type: "select",
-      options: folders.map(([f]) => f).length ? folders.map(([f]) => f) : ["General"],
-    },
-    { name: "file_type", label: "File type", type: "select", options: FILE_TYPES },
-    { name: "size_kb", label: "Size (KB)", type: "number" },
+    { name: "folder", label: "Folder", type: "select", options: folderNames },
     {
       name: "owner",
       label: "Owner",
@@ -120,6 +116,13 @@ function Page() {
       label: "Project",
       type: "select",
       options: projects.map((p) => ({ value: p.id, label: p.name })),
+    },
+    {
+      name: "drive_link",
+      label: "Google Drive Link",
+      type: "text",
+      placeholder: "https://drive.google.com/...",
+      full: true,
     },
   ];
 
@@ -139,15 +142,12 @@ function Page() {
             : "Company file repository, organised by folder."
         }
         action={
-          <RecordDialog
-            table="documents"
-            label="Document"
-            fields={FIELDS}
-            defaults={{
-              folder: "General",
-              file_type: "pdf",
-              owner: me?.access_role === "salesman" ? (myName ?? "") : "",
-            }}
+          <UploadDocumentDialog
+            title="Upload file"
+            folderOptions={folderNames}
+            owners={(employeeRows ?? []).map((e) => e.name)}
+            defaultOwner={me?.access_role === "salesman" ? (myName ?? "") : ""}
+            projects={projects}
             trigger={
               <Button>
                 <Upload className="size-4" /> Upload file
@@ -221,6 +221,7 @@ function Page() {
                     <th className="px-4 py-3 text-left font-semibold">Size</th>
                     <th className="px-4 py-3 text-left font-semibold">Owner</th>
                     <th className="px-4 py-3 text-left font-semibold">Project</th>
+                    <th className="px-4 py-3 text-left font-semibold">Drive</th>
                     <th className="px-4 py-3" />
                   </tr>
                 </thead>
@@ -261,18 +262,31 @@ function Page() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-8"
-                              aria-label="Download"
-                              onClick={() =>
-                                toast.info("Preview & download aren't available in this demo.")
-                              }
+                          {d.drive_link ? (
+                            <a
+                              href={d.drive_link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                              title="Open in Google Drive"
                             >
-                              <Download className="size-4" />
-                            </Button>
+                              <svg viewBox="0 0 87.3 78" className="size-4 shrink-0" aria-hidden="true">
+                                <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+                                <path d="M43.65 25L29.9 1.2C28.55 2 27.4 3.1 26.6 4.5L1.2 48.35A9.16 9.16 0 000 52.85h27.5z" fill="#00AC47"/>
+                                <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 11.5z" fill="#EA4335"/>
+                                <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.1.45-4.5 1.2z" fill="#00832D"/>
+                                <path d="M59.8 52.85H27.5L13.75 76.65c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.1-.45 4.5-1.2z" fill="#2684FC"/>
+                                <path d="M73.4 26.5l-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25l16.15 27.85H87.3c0-1.55-.4-3.1-1.2-4.5z" fill="#FFBA00"/>
+                              </svg>
+                              Open Drive
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-1">
+                            {d.file_id ? <OpenDocumentButton doc={d} /> : null}
                             <RecordDialog
                               table="documents"
                               label="Document"

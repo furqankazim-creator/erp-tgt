@@ -37,10 +37,13 @@ type Ticket = {
   satisfaction: number | null;
   assignee: string | null;
   sla_due_at: string | null;
+  project_id?: string | null;
 };
 type Employee = { id: string; name: string };
+type ProjectOption = { id: string; name: string };
 
-const STATUSES = ["Open", "Pending", "Resolved"];
+const STATUSES = ["Open", "Pending", "In Progress", "Resolved"];
+const TICKET_TYPES = ["Bug", "Question"];
 const PRIORITIES = ["Low", "Medium", "High", "Critical"];
 
 function isBreached(t: Ticket): boolean {
@@ -66,6 +69,7 @@ function Satisfaction({ value }: { value: number | null }) {
 function Page() {
   const { data, isLoading } = useRows<Ticket>("tickets");
   const { data: employeeRows } = useRows<Employee>("employees");
+  const { data: projectRows } = useRows<ProjectOption>("projects");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [, tick] = useState(0);
@@ -78,6 +82,15 @@ function Page() {
   const FIELDS: Field[] = [
     { name: "subject", label: "Subject", required: true, full: true },
     { name: "client", label: "Client" },
+    {
+      // Links the ticket to a project so it shows up in that project's
+      // Q&A/Bugs tab — without it the ticket only lives here.
+      name: "project_id",
+      label: "Project",
+      type: "select",
+      options: (projectRows ?? []).map((p) => ({ value: p.id, label: p.name })),
+    },
+    { name: "type", label: "Type", type: "select", options: TICKET_TYPES },
     {
       name: "assignee",
       label: "Assignee",
@@ -117,7 +130,7 @@ function Page() {
             table="tickets"
             label="Ticket"
             fields={FIELDS}
-            defaults={{ status: "Open", priority: "Medium" }}
+            defaults={{ status: "Open", priority: "Medium", type: "Bug" }}
             trigger={
               <Button>
                 <Plus className="size-4" /> New ticket

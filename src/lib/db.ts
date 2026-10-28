@@ -47,7 +47,10 @@ export type TableName =
   | "bills"
   | "bill_payments"
   | "sprints"
-  | "client_feedback";
+  | "client_feedback"
+  | "scope_change_requests"
+  | "scope_items"
+  | "project_activity";
 
 export type Row = Record<string, unknown>;
 

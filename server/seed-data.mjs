@@ -2504,6 +2504,22 @@ export const SEED = {
   // Dashboard's Client Feedback module. Empty by default; a submission path
   // (client-facing form or PM-entered) is a separate, later piece of work.
   client_feedback: [],
+
+  // Changes to a project's originally agreed scope (added / changed /
+  // removed work), raised by anyone on the project and approved or rejected
+  // by its PM or an Admin. Empty by default; created from the Scope tab.
+  scope_change_requests: [],
+
+  // The project's agreed scope broken into numbered items (S1, S2, …). An
+  // approved change request adds a new item, or marks an existing one
+  // Modified / Removed, so each item carries its own history.
+  scope_items: [],
+
+  // Append-only audit trail for everything that happens inside a project
+  // (who created / changed / deleted which task, bug, milestone, ... and
+  // what each field went from → to). Written by the server only; feeds the
+  // project's Audit Report tab.
+  project_activity: [],
   payments: [],
   notifications: [],
   inquiry_followups: [],

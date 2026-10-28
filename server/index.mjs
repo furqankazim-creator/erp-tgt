@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
+import { randomUUID } from "node:crypto";
+import { GridFSBucket, ObjectId } from "mongodb";
 
 import {
   TABLES,
@@ -13,6 +15,8 @@ import {
   appendActivityLog,
   deleteRow,
   nextDisplayId,
+  nextSequence,
+  getDB,
   findUserByEmail,
   findUserByEmailWithPassword,
   findUserById,
@@ -787,6 +791,9 @@ const DEVELOPER_SCOPED_TABLES = new Set([
   "client_feedback",
   "invoices",
   "meetings",
+  "scope_change_requests",
+  "scope_items",
+  "project_activity",
 ]);
 
 // Tables whose rows are scoped by "does this row's project_id belong to me" —
@@ -799,7 +806,28 @@ const PROJECT_LINKED_TABLES = new Set([
   "client_feedback",
   "invoices",
   "meetings",
+  "scope_change_requests",
+  "scope_items",
+  "project_activity",
 ]);
+
+// Money records are Admin-only to create, change or delete: invoices are
+// raised and sent by an Admin, and payments are recorded against them. The
+// Invoices page is already Admin-only in the nav — this closes the same
+// door on the generic write routes, which otherwise accept any logged-in
+// caller. Reads stay open (scoped for developers as above).
+const ADMIN_ONLY_WRITE_TABLES = new Set(["invoices", "payments"]);
+
+function requireAdminForMoneyWrites(req, res, next) {
+  if (
+    ADMIN_ONLY_WRITE_TABLES.has(req.params.table) &&
+    req.userRole !== "super_admin" &&
+    req.userRole !== "admin"
+  ) {
+    return res.status(403).json({ error: "Only an Admin can create or change invoices and payments." });
+  }
+  next();
+}
 
 async function resolveEmployeeName(userId) {
   const user = await findUserById(userId);
@@ -849,6 +877,694 @@ async function scopeRowsForDeveloper(table, rows, userId) {
   }
   return rows;
 }
+
+// --- Project audit trail ---
+// Every create / update / delete that goes through the API against a row
+// belonging to a project is appended to `project_activity`, with the
+// logged-in actor and a field-level before → after diff. It's the source of
+// the project's Audit Report, so it's server-written only: the generic
+// write routes below are closed for this table. Writes made directly by
+// background jobs (not through these routes) aren't captured.
+// `history` is a scope item's own change list — the status change beside
+// it already says what happened, without dumping the whole array as JSON.
+const AUDIT_IGNORED_FIELDS = new Set(["id", "created_at", "updated_at", "activity_log", "read_by", "history"]);
+const AUDIT_SKIPPED_TABLES = new Set(["project_activity", "notifications"]);
+
+function auditProjectId(table, row) {
+  if (!row) return null;
+  return table === "projects" ? row.id : (row.project_id ?? null);
+}
+
+function auditValue(v) {
+  if (v === undefined || v === null || v === "") return null;
+  if (Array.isArray(v)) return v.map(String).join(", ").slice(0, 300) || null;
+  if (typeof v === "object") return JSON.stringify(v).slice(0, 300);
+  return String(v).slice(0, 300);
+}
+
+function auditDiff(before, after) {
+  const keys = new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})]);
+  const changes = [];
+  for (const field of keys) {
+    if (AUDIT_IGNORED_FIELDS.has(field)) continue;
+    const from = auditValue(before?.[field]);
+    const to = auditValue(after?.[field]);
+    if (from !== to) changes.push({ field, from, to });
+  }
+  return changes;
+}
+
+// Fire-and-forget: an audit write failing must never fail the user's save.
+function recordProjectActivity(req, table, action, before, after) {
+  if (AUDIT_SKIPPED_TABLES.has(table)) return;
+  const row = after ?? before;
+  const projectId = auditProjectId(table, after) ?? auditProjectId(table, before);
+  if (!row || !projectId) return;
+  const changes = action === "updated" ? auditDiff(before, after) : [];
+  // The edit forms resend every field on every save — a save that changed
+  // nothing isn't activity.
+  if (action === "updated" && changes.length === 0) return;
+  void (async () => {
+    await createRow("project_activity", {
+      project_id: projectId,
+      table,
+      record_id: row.id,
+      record_label: String(row.title ?? row.name ?? row.subject ?? row.display_id ?? "").slice(0, 200),
+      action,
+      changes,
+      actor: await resolveActorName(req.userId),
+      actor_role: req.userRole,
+    });
+  })().catch((err) => console.error("[audit] failed to record project activity:", err));
+}
+
+for (const method of ["post", "put", "delete"]) {
+  app[method](["/api/project_activity", "/api/project_activity/:id"], requireAuth, (req, res) =>
+    res.status(403).json({ error: "The audit trail is read-only." }),
+  );
+}
+
+// --- Scope change requests ---
+// Dedicated write routes, registered before the generic /api/:table ones so
+// they win. The generic routes would let any caller set `status: "Approved"`
+// on their own request; here the approval rules live server-side: anyone on
+// the project can raise a request, only that project's PM (its `manager`)
+// or an Admin can move it through review, and the audit fields (who raised
+// it, who decided, when) are always server-set. Reads go through the
+// generic GET, scoped to the developer's own projects like other tables.
+const SCOPE_CHANGE_TYPES = ["Addition", "Modification", "Removal"];
+const SCOPE_CHANGE_TRANSITIONS = {
+  Pending: ["Under Review", "Approved", "Rejected"],
+  "Under Review": ["Approved", "Rejected"],
+  Approved: ["Implemented"],
+  Rejected: [],
+  Implemented: [],
+};
+
+function scopeChangeEditableFields(body) {
+  const patch = {};
+  if (typeof body.title === "string") patch.title = body.title.trim().slice(0, 200);
+  if (typeof body.description === "string") patch.description = body.description.trim().slice(0, 4000);
+  if (SCOPE_CHANGE_TYPES.includes(body.change_type)) patch.change_type = body.change_type;
+  if (body.impact_days !== undefined) patch.impact_days = Math.max(0, Number(body.impact_days) || 0);
+  if (body.impact_cost !== undefined) patch.impact_cost = Math.max(0, Number(body.impact_cost) || 0);
+  if (body.scope_item_id !== undefined) {
+    patch.scope_item_id = typeof body.scope_item_id === "string" && body.scope_item_id ? body.scope_item_id : null;
+  }
+  return patch;
+}
+
+async function scopeChangeAccess(req, project) {
+  const actor = await resolveActorName(req.userId);
+  const isAdmin = req.userRole === "super_admin" || req.userRole === "admin";
+  const isPm = Boolean(actor && project?.manager === actor);
+  return { actor, canDecide: isAdmin || isPm };
+}
+
+// A Modification / Removal has to say which scope item (S1, S2, …) it
+// touches; an Addition creates a new one on approval, so it points at none.
+// Returns the error message, or null when the pairing is valid.
+async function scopeItemError(projectId, changeType, scopeItemId) {
+  if (changeType === "Addition") return null;
+  if (!scopeItemId) return `A ${changeType.toLowerCase()} must name the scope item it changes.`;
+  const item = await getRow("scope_items", scopeItemId);
+  if (!item || item.project_id !== projectId) return "That scope item isn't part of this project.";
+  if (item.status === "Removed") return `${item.code} has already been removed from scope.`;
+  return null;
+}
+
+// Approval is the moment the agreed scope changes, so that's when the
+// request is applied to the scope items: an Addition becomes a new item,
+// a Modification / Removal restamps the existing one. Each item keeps the
+// list of requests that shaped it.
+async function applyApprovedScopeChange(req, cr, actor) {
+  const entry = {
+    change_request_id: cr.id,
+    change_request_code: cr.display_id,
+    change_type: cr.change_type,
+    title: cr.title,
+    by: actor,
+    at: new Date().toISOString(),
+  };
+  if (cr.change_type === "Addition") {
+    const n = await nextSequence(`SCOPE-${cr.project_id}`);
+    const item = await createRow("scope_items", {
+      project_id: cr.project_id,
+      number: n,
+      code: `S${n}`,
+      title: cr.title,
+      description: cr.description || null,
+      status: "Added",
+      origin_change_request_code: cr.display_id,
+      history: [entry],
+      created_by: actor,
+    });
+    recordProjectActivity(req, "scope_items", "created", null, item);
+    return item.id;
+  }
+  const item = cr.scope_item_id ? await getRow("scope_items", cr.scope_item_id) : null;
+  if (!item || item.status === "Removed") return cr.scope_item_id ?? null;
+  const updated = await updateRow("scope_items", item.id, {
+    status: cr.change_type === "Removal" ? "Removed" : "Modified",
+    history: [...(item.history ?? []), entry],
+  });
+  recordProjectActivity(req, "scope_items", "updated", item, updated);
+  return item.id;
+}
+
+// --- Client feedback link ---
+// A project's PM / an Admin gets one unguessable link per project to send
+// the client; opening it needs no login and only ever reveals the project's
+// name. Each submission lands in `client_feedback` (the Client Feedback and
+// Feedback Statement tabs) with status New, and pings the PM.
+
+app.post("/api/projects/:id/feedback-link", requireAuth, async (req, res, next) => {
+  try {
+    const project = await getRow("projects", req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const { canDecide } = await scopeChangeAccess(req, project);
+    if (!canDecide) {
+      return res.status(403).json({ error: "Only the project's PM or an Admin can share the feedback link." });
+    }
+    let token = project.feedback_token;
+    if (!token || req.body?.regenerate) {
+      token = randomUUID().replace(/-/g, "");
+      await updateRow("projects", project.id, { feedback_token: token });
+    }
+    res.json({ token });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function projectByFeedbackToken(token) {
+  if (!/^[0-9a-f]{32}$/.test(String(token))) return null;
+  const projects = await listRows("projects");
+  return projects.find((p) => p.feedback_token === token) ?? null;
+}
+
+app.get("/api/public/feedback/:token", publicRateLimit(60, 15 * 60 * 1000), async (req, res, next) => {
+  try {
+    const project = await projectByFeedbackToken(req.params.token);
+    if (!project) return res.status(404).json({ error: "This feedback link isn't valid." });
+    const company = await getRow("company_profile", "default");
+    res.json({
+      project_name: project.name,
+      client: project.client ?? null,
+      company_name: company?.display_name || company?.name || "Time Global Tech",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/public/feedback/:token", publicRateLimit(5, 15 * 60 * 1000), async (req, res, next) => {
+  try {
+    const project = await projectByFeedbackToken(req.params.token);
+    if (!project) return res.status(404).json({ error: "This feedback link isn't valid." });
+    const { client_name, rating, comment } = req.body ?? {};
+    const stars = Math.round(Number(rating));
+    if (!(stars >= 1 && stars <= 5)) return res.status(400).json({ error: "Pick a rating from 1 to 5." });
+    const text = typeof comment === "string" ? comment.trim().slice(0, 4000) : "";
+    if (!text) return res.status(400).json({ error: "Please add a short comment." });
+    const name =
+      (typeof client_name === "string" && client_name.trim().slice(0, 200)) || project.client || "Client";
+    const now = new Date().toISOString();
+    const row = await createRow("client_feedback", {
+      project_id: project.id,
+      client_name: name,
+      rating: stars,
+      comment: text,
+      submitted_at: now,
+      status: "New",
+      source: "Client link",
+      logged_by: null,
+      response: null,
+    });
+    res.status(201).json({ ok: true });
+    recordProjectActivity(req, "client_feedback", "created", null, { ...row, title: `${stars}★ from ${name}` });
+    if (project.manager) {
+      void notify({
+        type: "client_feedback_received",
+        message: `${name} left ${stars}★ feedback on ${project.name}`,
+        link: `/project/${project.id}`,
+        owner: project.manager,
+        actor: null,
+      }).catch((err) => console.error("[notify] feedback notification failed:", err));
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- File storage (documents) ---
+// Uploaded files live in MongoDB GridFS (bucket "files") in the same
+// database as everything else, so they survive redeploys and need no extra
+// storage service. A `documents` row points at its file by `file_id`.
+// Bytes are sent raw (Content-Type: application/octet-stream) with the real
+// name/type in the query string, so the global JSON parser never touches
+// them; the file's own type is restored on download.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+function filesBucket() {
+  return new GridFSBucket(getDB(), { bucketName: "files" });
+}
+
+async function developerCanUseProjectFile(req, projectId) {
+  if (req.userRole !== "developer" || !projectId) return true;
+  const project = await getRow("projects", projectId);
+  if (!project) return false;
+  return (await scopeRowsForDeveloper("projects", [project], req.userId)).length > 0;
+}
+
+app.post(
+  "/api/files",
+  requireAuth,
+  express.raw({ type: () => true, limit: MAX_UPLOAD_BYTES }),
+  async (req, res, next) => {
+    try {
+      if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: "No file received." });
+      }
+      const name = String(req.query.name || "file").slice(0, 200);
+      const contentType = String(req.query.type || "application/octet-stream").slice(0, 200);
+      const projectId = req.query.project_id ? String(req.query.project_id) : null;
+      if (!(await developerCanUseProjectFile(req, projectId))) {
+        return res.status(403).json({ error: "You can only upload files to your own projects." });
+      }
+      const actor = await resolveActorName(req.userId);
+      const upload = filesBucket().openUploadStream(name, {
+        metadata: { content_type: contentType, project_id: projectId, uploaded_by: actor },
+      });
+      await new Promise((resolve, reject) => {
+        upload.on("finish", resolve);
+        upload.on("error", reject);
+        upload.end(req.body);
+      });
+      res.status(201).json({
+        id: String(upload.id),
+        name,
+        size: req.body.length,
+        content_type: contentType,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+app.get("/api/files/:id", requireAuth, async (req, res, next) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) return res.status(404).json({ error: "File not found" });
+    const _id = new ObjectId(req.params.id);
+    const file = await getDB().collection("files.files").findOne({ _id });
+    if (!file) return res.status(404).json({ error: "File not found" });
+    if (!(await developerCanUseProjectFile(req, file.metadata?.project_id))) {
+      return res.status(404).json({ error: "File not found" });
+    }
+    res.set("Content-Type", file.metadata?.content_type || "application/octet-stream");
+    res.set("Content-Length", String(file.length));
+    res.set(
+      "Content-Disposition",
+      `inline; filename*=UTF-8''${encodeURIComponent(file.filename || "file")}`,
+    );
+    filesBucket()
+      .openDownloadStream(_id)
+      .on("error", (err) => {
+        if (!res.headersSent) next(err);
+        else res.destroy(err);
+      })
+      .pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Import past commits (VS Dev Activity backfill) ---
+// PM Connect only records a commit when the extension reports it live, so a
+// project that ran for months before the extension was installed shows no
+// history. This takes the output of one specific `git log` command (the UI
+// shows it) and records each commit under its real author date, deduped by
+// SHA against anything the extension already sent. Only commits and their
+// per-day counts are backfilled — never active time or work logs, which
+// git history can't tell us.
+//
+//   git log --all --no-merges --since="4 months ago" --name-only
+//           --pretty=format:"@@@%H|%ae|%an|%aI|%s"
+const MAX_IMPORTED_COMMITS = 5000;
+
+function parseGitLogExport(text) {
+  const commits = [];
+  for (const chunk of String(text ?? "").split("@@@").slice(1)) {
+    const lines = chunk.split(/\r?\n/);
+    const [sha, email, name, date, ...subject] = (lines[0] ?? "").split("|");
+    if (!/^[0-9a-f]{7,40}$/i.test(sha?.trim() ?? "")) continue;
+    const at = new Date(date?.trim());
+    if (Number.isNaN(at.getTime())) continue;
+    commits.push({
+      sha: sha.trim().toLowerCase(),
+      email: (email ?? "").trim().toLowerCase(),
+      name: (name ?? "").trim(),
+      at,
+      message: subject.join("|").trim().slice(0, 500),
+      files: lines.slice(1).map((l) => l.trim()).filter(Boolean).slice(0, 500),
+    });
+    if (commits.length >= MAX_IMPORTED_COMMITS) break;
+  }
+  return commits;
+}
+
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+app.post("/api/projects/:id/import-commits", requireAuth, async (req, res, next) => {
+  try {
+    const project = await getRow("projects", req.params.id);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+    const { actor, canDecide } = await scopeChangeAccess(req, project);
+    if (!canDecide) {
+      return res.status(403).json({ error: "Only the project's PM or an Admin can import commit history." });
+    }
+    const commits = parseGitLogExport(req.body?.log);
+    if (commits.length === 0) {
+      return res.status(400).json({
+        error: "No commits found — paste the output of the exact git log command shown, including the @@@ lines.",
+      });
+    }
+
+    // Author email → employee name, same git_email-then-email rule the
+    // extension's auto-match uses. Unknown authors keep their git name.
+    const employees = await listRows("employees");
+    const byEmail = new Map();
+    for (const e of employees) {
+      if (e.email) byEmail.set(e.email.toLowerCase(), e);
+      if (e.git_email) byEmail.set(e.git_email.toLowerCase(), e);
+    }
+
+    const db = getDB();
+    const now = new Date().toISOString();
+    const perDay = new Map();
+    const unmatched = new Set();
+    let imported = 0;
+    for (const c of commits) {
+      const emp = byEmail.get(c.email);
+      if (!emp) unmatched.add(c.name || c.email || "Unknown");
+      const employee = emp?.name ?? (c.name || c.email || "Unknown");
+      const result = await db.collection("pm_commits").updateOne(
+        { project_id: project.id, commit_sha: c.sha },
+        {
+          $setOnInsert: {
+            id: randomUUID(),
+            project_id: project.id,
+            commit_sha: c.sha,
+            commit_message: c.message,
+            files_changed: c.files,
+            employee,
+            employee_id: emp?.id ?? null,
+            author_email: c.email || null,
+            created_at: c.at.toISOString(),
+            imported: true,
+            imported_at: now,
+            imported_by: actor,
+          },
+        },
+        { upsert: true },
+      );
+      if (result.upsertedCount === 0) continue;
+      imported += 1;
+      const key = `${employee}\u0000${localDateStr(c.at)}`;
+      perDay.set(key, (perDay.get(key) ?? 0) + 1);
+    }
+
+    for (const [key, count] of perDay) {
+      const [employee, date] = key.split("\u0000");
+      await db.collection("pm_daily_log").updateOne(
+        { project_id: project.id, employee, date },
+        {
+          $inc: { commits_count: count },
+          $setOnInsert: {
+            id: randomUUID(),
+            project_id: project.id,
+            employee,
+            employee_id: null,
+            date,
+            active_seconds: 0,
+            created_at: now,
+          },
+          $set: { updated_at: now },
+        },
+        { upsert: true },
+      );
+    }
+
+    // "Days since start" should reflect when work actually began.
+    const earliest = commits.reduce((min, c) => (c.at < min ? c.at : min), commits[0].at).toISOString();
+    if (!project.started_at || earliest < project.started_at) {
+      await updateRow("projects", project.id, { started_at: earliest });
+    }
+
+    res.json({
+      found: commits.length,
+      imported,
+      skipped: commits.length - imported,
+      unmatchedAuthors: [...unmatched],
+      earliest,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- Scope items (S1, S2, …) ---
+// The baseline scope is entered item by item by the PM / an Admin; after
+// that, items only change through approved change requests (above). Reads
+// go through the generic GET, scoped like every other project table.
+app.post("/api/scope_items", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    const project = body.project_id ? await getRow("projects", body.project_id) : null;
+    if (!project) return res.status(400).json({ error: "A valid project is required." });
+    const { actor, canDecide } = await scopeChangeAccess(req, project);
+    if (!canDecide) {
+      return res.status(403).json({ error: "Only the project's PM or an Admin can add scope items." });
+    }
+    const title = typeof body.title === "string" ? body.title.trim().slice(0, 200) : "";
+    if (!title) return res.status(400).json({ error: "Title is required." });
+    const n = await nextSequence(`SCOPE-${project.id}`);
+    const row = await createRow("scope_items", {
+      project_id: project.id,
+      number: n,
+      code: `S${n}`,
+      title,
+      description:
+        typeof body.description === "string" ? body.description.trim().slice(0, 4000) || null : null,
+      status: "Agreed",
+      origin_change_request_code: null,
+      history: [],
+      created_by: actor,
+    });
+    res.status(201).json(row);
+    recordProjectActivity(req, "scope_items", "created", null, row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/scope_items/:id", requireAuth, async (req, res, next) => {
+  try {
+    const before = await getRow("scope_items", req.params.id);
+    if (!before) return res.status(404).json({ error: "Not found" });
+    const project = await getRow("projects", before.project_id);
+    const { canDecide } = await scopeChangeAccess(req, project);
+    if (!canDecide) {
+      return res.status(403).json({ error: "Only the project's PM or an Admin can edit scope items." });
+    }
+    // Wording fixes only — status and history move through change requests.
+    const body = req.body ?? {};
+    const patch = {};
+    if (typeof body.title === "string") patch.title = body.title.trim().slice(0, 200);
+    if (typeof body.description === "string") patch.description = body.description.trim().slice(0, 4000) || null;
+    if (patch.title === "") return res.status(400).json({ error: "Title is required." });
+    if (!Object.keys(patch).length) return res.json(before);
+    const row = await updateRow("scope_items", before.id, patch);
+    res.json(row);
+    recordProjectActivity(req, "scope_items", "updated", before, row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/scope_items/:id", requireAuth, async (req, res, next) => {
+  try {
+    const before = await getRow("scope_items", req.params.id);
+    if (!before) return res.status(404).json({ error: "Not found" });
+    const project = await getRow("projects", before.project_id);
+    const { canDecide } = await scopeChangeAccess(req, project);
+    if (!canDecide) {
+      return res.status(403).json({ error: "Only the project's PM or an Admin can delete scope items." });
+    }
+    // Once a change request has touched an item, deleting it would erase
+    // part of the agreed-scope record — it can only be Removed via a CR.
+    if ((before.history ?? []).length > 0) {
+      return res
+        .status(400)
+        .json({ error: `${before.code} is part of a change request's history — raise a Removal instead.` });
+    }
+    await deleteRow("scope_items", before.id);
+    res.status(204).end();
+    recordProjectActivity(req, "scope_items", "deleted", before, null);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/scope_change_requests", requireAuth, async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    const project = body.project_id ? await getRow("projects", body.project_id) : null;
+    if (!project) return res.status(400).json({ error: "A valid project is required." });
+    if (req.userRole === "developer") {
+      const mine = await scopeRowsForDeveloper("projects", [project], req.userId);
+      if (mine.length === 0) return res.status(404).json({ error: "Not found" });
+    }
+    const fields = scopeChangeEditableFields(body);
+    if (!fields.title) return res.status(400).json({ error: "Title is required." });
+    const changeType = fields.change_type ?? "Addition";
+    const itemError = await scopeItemError(project.id, changeType, fields.scope_item_id);
+    if (itemError) return res.status(400).json({ error: itemError });
+    const { actor } = await scopeChangeAccess(req, project);
+    const row = await createRow("scope_change_requests", {
+      project_id: project.id,
+      description: "",
+      impact_days: 0,
+      impact_cost: 0,
+      ...fields,
+      change_type: changeType,
+      scope_item_id: changeType === "Addition" ? null : fields.scope_item_id,
+      display_id: await nextDisplayId("CR"),
+      status: "Pending",
+      requested_by: actor,
+      decided_by: null,
+      decided_at: null,
+      decision_note: null,
+      implemented_at: null,
+    });
+    res.status(201).json(row);
+    recordProjectActivity(req, "scope_change_requests", "created", null, row);
+    if (project.manager && project.manager !== actor) {
+      void notify({
+        type: "scope_change_requested",
+        message: `${actor ?? "Someone"} raised a scope change on ${project.name}: ${row.title}`,
+        link: `/project/${project.id}`,
+        owner: project.manager,
+        actor,
+      }).catch((err) => console.error("[notify] scope change notification failed:", err));
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put("/api/scope_change_requests/:id", requireAuth, async (req, res, next) => {
+  try {
+    const before = await getRow("scope_change_requests", req.params.id);
+    if (!before) return res.status(404).json({ error: "Not found" });
+    if (req.userRole === "developer") {
+      const scoped = await scopeRowsForDeveloper("scope_change_requests", [before], req.userId);
+      if (scoped.length === 0) return res.status(404).json({ error: "Not found" });
+    }
+    const project = await getRow("projects", before.project_id);
+    const { actor, canDecide } = await scopeChangeAccess(req, project);
+    const body = req.body ?? {};
+    const patch = {};
+
+    const nextStatus = body.status;
+    if (nextStatus !== undefined && nextStatus !== before.status) {
+      if (!canDecide) {
+        return res.status(403).json({ error: "Only the project's PM or an Admin can change the status." });
+      }
+      if (!(SCOPE_CHANGE_TRANSITIONS[before.status] ?? []).includes(nextStatus)) {
+        return res
+          .status(400)
+          .json({ error: `Can't move a request from ${before.status} to ${nextStatus}.` });
+      }
+      patch.status = nextStatus;
+      const now = new Date().toISOString();
+      if (nextStatus === "Approved" || nextStatus === "Rejected") {
+        patch.decided_by = actor;
+        patch.decided_at = now;
+        if (typeof body.decision_note === "string") {
+          patch.decision_note = body.decision_note.trim().slice(0, 2000) || null;
+        }
+      }
+      if (nextStatus === "Implemented") patch.implemented_at = now;
+    }
+
+    const edits = scopeChangeEditableFields(body);
+    if (Object.keys(edits).length) {
+      // Once a decision has been made the request is a record of what was
+      // agreed — editing its content after that would rewrite history.
+      const stillOpen = before.status === "Pending" || before.status === "Under Review";
+      const isRequester = Boolean(actor && before.requested_by === actor);
+      if (!stillOpen || !(canDecide || isRequester)) {
+        return res.status(403).json({ error: "This request can no longer be edited." });
+      }
+      if (edits.title === "") return res.status(400).json({ error: "Title is required." });
+      const changeType = edits.change_type ?? before.change_type;
+      const itemId = edits.scope_item_id !== undefined ? edits.scope_item_id : before.scope_item_id;
+      const itemError = await scopeItemError(before.project_id, changeType, itemId);
+      if (itemError) return res.status(400).json({ error: itemError });
+      if (changeType === "Addition") edits.scope_item_id = null;
+      Object.assign(patch, edits);
+    }
+
+    if (patch.status === "Approved") {
+      const approved = { ...before, ...patch };
+      const itemError = await scopeItemError(approved.project_id, approved.change_type, approved.scope_item_id);
+      if (itemError) return res.status(400).json({ error: itemError });
+      patch.scope_item_id = await applyApprovedScopeChange(req, approved, actor);
+    }
+
+    if (!Object.keys(patch).length) return res.json(before);
+    const row = await updateRow("scope_change_requests", before.id, patch);
+    res.json(row);
+    recordProjectActivity(req, "scope_change_requests", "updated", before, row);
+    if (patch.decided_by && before.requested_by && before.requested_by !== actor) {
+      void notify({
+        type: "scope_change_decided",
+        message: `Your scope change "${before.title}" on ${project?.name ?? "a project"} was ${patch.status.toLowerCase()}.`,
+        link: `/project/${before.project_id}`,
+        owner: before.requested_by,
+        actor,
+      }).catch((err) => console.error("[notify] scope change notification failed:", err));
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete("/api/scope_change_requests/:id", requireAuth, async (req, res, next) => {
+  try {
+    const before = await getRow("scope_change_requests", req.params.id);
+    if (!before) return res.status(404).json({ error: "Not found" });
+    if (req.userRole === "developer") {
+      const scoped = await scopeRowsForDeveloper("scope_change_requests", [before], req.userId);
+      if (scoped.length === 0) return res.status(404).json({ error: "Not found" });
+    }
+    const project = await getRow("projects", before.project_id);
+    const { actor, canDecide } = await scopeChangeAccess(req, project);
+    const ownPending = before.status === "Pending" && actor && before.requested_by === actor;
+    if (!canDecide && !ownPending) {
+      return res.status(403).json({ error: "You can only withdraw your own pending requests." });
+    }
+    await deleteRow("scope_change_requests", before.id);
+    res.status(204).end();
+    recordProjectActivity(req, "scope_change_requests", "deleted", before, null);
+  } catch (err) {
+    next(err);
+  }
+});
 
 app.get("/api/:table", requireTable, requireAuth, async (req, res, next) => {
   try {
@@ -1012,7 +1728,7 @@ const DISPLAY_ID_PREFIX = {
   bookkeeping_transactions: "TXN",
 };
 
-app.post("/api/:table", requireTable, requireAuth, async (req, res, next) => {
+app.post("/api/:table", requireTable, requireAuth, requireAdminForMoneyWrites, async (req, res, next) => {
   try {
     const body = req.body ?? {};
     // A Developer logging their own work can't be trusted to send the right
@@ -1024,6 +1740,23 @@ app.post("/api/:table", requireTable, requireAuth, async (req, res, next) => {
       const myName = await resolveEmployeeName(req.userId);
       if (!myName) return res.status(403).json({ error: "No employee record linked to this account." });
       body.employee = myName;
+    }
+    // Bugs / questions raised from a project's Q&A tab: a Developer may only
+    // file against a project they're on, and "Reported by" is server-set
+    // like inquiries.created_by — never trusted from the client.
+    if (req.params.table === "tickets") {
+      if (req.userRole === "developer") {
+        const project = body.project_id ? await getRow("projects", body.project_id) : null;
+        const mine = project ? await scopeRowsForDeveloper("projects", [project], req.userId) : [];
+        if (mine.length === 0) return res.status(403).json({ error: "Pick one of your own projects." });
+      }
+      body.reported_by = await resolveActorName(req.userId);
+      body.resolved_by = null;
+      body.resolved_at = null;
+      if (body.status === "Resolved") {
+        body.resolved_by = body.reported_by;
+        body.resolved_at = new Date().toISOString();
+      }
     }
     let row = await createRow(req.params.table, body);
     const patch = {};
@@ -1052,8 +1785,18 @@ app.post("/api/:table", requireTable, requireAuth, async (req, res, next) => {
       row = (await updateRow(req.params.table, row.id, patch)) ?? row;
     }
     res.status(201).json(row);
+    recordProjectActivity(req, req.params.table, "created", null, row);
     if (req.params.table === "inquiries") {
       void onInquiryCreated(row);
+    }
+    if (req.params.table === "tickets" && row.assignee && row.assignee !== row.reported_by) {
+      void notify({
+        type: row.type === "Question" ? "question_assigned" : "bug_assigned",
+        message: `${row.reported_by ?? "Someone"} assigned you ${row.type === "Question" ? "a question" : "a bug"}: ${row.subject}`,
+        link: row.project_id ? `/project/${row.project_id}` : "/after-sales",
+        owner: row.assignee,
+        actor: row.reported_by,
+      }).catch((err) => console.error("[notify] ticket notification failed:", err));
     }
     // Logging a follow-up is a real signal someone's actively working the
     // inquiry — the same "move the card forward automatically" rule as
@@ -1475,24 +2218,18 @@ app.post(
   },
 );
 
-// Same shape as the proposal/meeting send routes above. Developers are
-// explicitly allowed to send invoices for their own projects (confirmed
-// override of the original admin/salesman-only recommendation) — the
-// invoice itself is still scoped to the developer's own projects via
-// DEVELOPER_SCOPED_TABLES/PROJECT_LINKED_TABLES above, so this only ever
-// lets them send an invoice that already belongs to one of their projects.
+// Same shape as the proposal/meeting send routes above. Invoices are
+// created and sent to the client by an Admin only — developers and
+// salesmen can see a project's invoices but not send them (this replaces
+// the earlier "developers may send their own projects' invoices" rule).
 app.post(
   "/api/invoices/:id/send",
   requireAuth,
-  requireRole("super_admin", "admin", "salesman", "developer"),
+  requireRole("super_admin", "admin"),
   async (req, res, next) => {
     try {
       const invoice = await getRow("invoices", req.params.id);
       if (!invoice) return res.status(404).json({ error: "Invoice not found" });
-      if (req.userRole === "developer") {
-        const scoped = await scopeRowsForDeveloper("invoices", [invoice], req.userId);
-        if (scoped.length === 0) return res.status(404).json({ error: "Invoice not found" });
-      }
       const { to } = req.body ?? {};
       let recipient = to;
       if (!recipient && invoice.client) {
@@ -1600,7 +2337,7 @@ app.post(
   },
 );
 
-app.put("/api/:table/:id", requireTable, requireAuth, async (req, res, next) => {
+app.put("/api/:table/:id", requireTable, requireAuth, requireAdminForMoneyWrites, async (req, res, next) => {
   try {
     // Snapshot before the update — the only way to tell "owner changed" from
     // "owner resaved unchanged" (the edit form resends every field on every
@@ -1620,9 +2357,33 @@ app.put("/api/:table/:id", requireTable, requireAuth, async (req, res, next) => 
       if (!myName) return res.status(403).json({ error: "No employee record linked to this account." });
       body.employee = myName;
     }
+    if (req.params.table === "tickets" && before) {
+      delete body.reported_by;
+      delete body.resolved_by;
+      delete body.resolved_at;
+      // Moving a ticket must still land it on a project the Developer is on,
+      // otherwise the scoping check above is one PUT away from bypassed.
+      if (
+        req.userRole === "developer" &&
+        body.project_id !== undefined &&
+        body.project_id !== before.project_id
+      ) {
+        const project = body.project_id ? await getRow("projects", body.project_id) : null;
+        const mine = project ? await scopeRowsForDeveloper("projects", [project], req.userId) : [];
+        if (mine.length === 0) return res.status(403).json({ error: "Pick one of your own projects." });
+      }
+      if (body.status === "Resolved" && before.status !== "Resolved") {
+        body.resolved_by = await resolveActorName(req.userId);
+        body.resolved_at = new Date().toISOString();
+      } else if (body.status !== undefined && body.status !== "Resolved" && before.status === "Resolved") {
+        body.resolved_by = null;
+        body.resolved_at = null;
+      }
+    }
     const row = await updateRow(req.params.table, req.params.id, body);
     if (!row) return res.status(404).json({ error: "Not found" });
     res.json(row);
+    recordProjectActivity(req, req.params.table, "updated", before, row);
 
     if (req.params.table === "deals" && req.body?.stage === "Won") {
       void (async () => {
@@ -1688,10 +2449,10 @@ app.put("/api/:table/:id", requireTable, requireAuth, async (req, res, next) => 
   }
 });
 
-app.delete("/api/:table/:id", requireTable, requireAuth, async (req, res, next) => {
+app.delete("/api/:table/:id", requireTable, requireAuth, requireAdminForMoneyWrites, async (req, res, next) => {
   try {
+    const existing = await getRow(req.params.table, req.params.id);
     if (req.userRole === "developer" && DEVELOPER_SCOPED_TABLES.has(req.params.table)) {
-      const existing = await getRow(req.params.table, req.params.id);
       const scoped = existing
         ? await scopeRowsForDeveloper(req.params.table, [existing], req.userId)
         : [];
@@ -1700,6 +2461,13 @@ app.delete("/api/:table/:id", requireTable, requireAuth, async (req, res, next) 
     const removed = await deleteRow(req.params.table, req.params.id);
     if (!removed) return res.status(404).json({ error: "Not found" });
     res.status(204).end();
+    recordProjectActivity(req, req.params.table, "deleted", existing, null);
+    // A deleted document takes its stored file with it.
+    if (req.params.table === "documents" && existing?.file_id && ObjectId.isValid(existing.file_id)) {
+      filesBucket()
+        .delete(new ObjectId(existing.file_id))
+        .catch((err) => console.error("[files] failed to delete stored file:", err.message));
+    }
   } catch (err) {
     next(err);
   }
