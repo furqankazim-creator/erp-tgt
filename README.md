@@ -150,7 +150,7 @@ npm run dev:all
 | Field    | Value               |
 | -------- | ------------------- |
 | Email    | `demo@globaltech.io`|
-| Password | `demo1234`          |
+| Password | the `ADMIN_PASSWORD` value in `server/.env` |
 
 ---
 

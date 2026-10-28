@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { auth, DEMO_EMAIL, DEMO_PASSWORD } from "@/lib/mock-auth";
+import { auth } from "@/lib/mock-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -70,12 +70,6 @@ function AuthPage() {
       return;
     }
     void navigate({ to: "/dashboard", replace: true });
-  }
-
-  function fillDemoCredentials() {
-    setEmail(DEMO_EMAIL);
-    setPassword(DEMO_PASSWORD);
-    toast.info("Demo credentials filled in — hit Sign in.");
   }
 
   return (
@@ -211,17 +205,6 @@ function AuthPage() {
             </Button>
           </form>
 
-          <div className="border-border bg-accent/40 mt-6 flex items-center justify-between gap-3 rounded-xl border p-3">
-            <div className="min-w-0">
-              <p className="text-foreground text-xs font-semibold">Just want to look around?</p>
-              <p className="text-muted-foreground truncate text-xs">
-                Use the built-in demo account.
-              </p>
-            </div>
-            <Button type="button" variant="outline" size="sm" onClick={fillDemoCredentials}>
-              Fill demo login
-            </Button>
-          </div>
         </div>
       </div>
     </div>

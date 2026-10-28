@@ -3,9 +3,7 @@ import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { getDB } from "./db.mjs";
 
-const JWT_SECRET =
-  process.env.JWT_SECRET ||
-  "change-me-in-production-local-dev-fallback-12345";
+import { JWT_SECRET } from "./auth-secret.mjs";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -68,6 +66,13 @@ const router = Router();
 // ---- 1. POST /auto-match  (NO auth) ----
 router.post("/auto-match", async (req, res, next) => {
   try {
+    // Optional shared secret: set PMCONNECT_SHARED_SECRET and have the
+    // extension send it as X-PMConnect-Secret so a stranger who only knows a
+    // developer's email and a project name can't mint an API key.
+    const shared = process.env.PMCONNECT_SHARED_SECRET;
+    if (shared && req.headers["x-pmconnect-secret"] !== shared) {
+      return res.status(401).json({ error: "Invalid PM Connect secret" });
+    }
     const { gitEmail, machineUsername, workspaceFolderName, gitRemoteUrl } =
       req.body ?? {};
 
@@ -86,40 +91,40 @@ router.post("/auto-match", async (req, res, next) => {
     }
 
     // --- find project ---
-    // Prefer the most precise signal first so an ambiguous substring (e.g.
-    // workspace "Connect" vs. an unrelated project named "pm-connect-extension")
-    // can never outrank an exact match. Each tier only runs if the previous
-    // one found nothing.
-    let project = null;
+    // Gather candidates from the most precise signal to the loosest, then pick
+    // the first one this employee is actually on. Two projects can share a name
+    // (or one name can contain another), so taking the first database hit could
+    // return a project the developer isn't a member of.
+    const isMember = (proj) =>
+      employee &&
+      ((Array.isArray(proj.team) && proj.team.includes(employee.name)) ||
+        proj.manager === employee.name);
+    const candidates = [];
     if (gitRemoteUrl) {
-      project = await db.collection("projects").findOne({ repo_url: gitRemoteUrl });
+      candidates.push(...(await db.collection("projects").find({ repo_url: gitRemoteUrl }).toArray()));
     }
-    if (!project && workspaceFolderName) {
-      project = await db.collection("projects").findOne({
-        name: { $regex: new RegExp(`^${escapeRegex(workspaceFolderName)}$`, "i") },
-      });
+    if (workspaceFolderName) {
+      candidates.push(
+        ...(await db
+          .collection("projects")
+          .find({ name: { $regex: new RegExp(`^${escapeRegex(workspaceFolderName)}$`, "i") } })
+          .toArray()),
+        ...(await db
+          .collection("projects")
+          .find({ name: { $regex: new RegExp(escapeRegex(workspaceFolderName), "i") } })
+          .toArray()),
+      );
     }
-    if (!project && workspaceFolderName) {
-      project = await db.collection("projects").findOne({
-        name: { $regex: new RegExp(escapeRegex(workspaceFolderName), "i") },
-      });
-    }
+    const project = candidates.find((c) => !c.deleted_at && isMember(c)) ?? null;
 
     // --- validate match ---
     if (employee && project) {
-      const empName = employee.name;
-      const isTeamMember =
-        (Array.isArray(project.team) && project.team.some((t) => t === empName)) ||
-        project.manager === empName;
-
-      if (isTeamMember) {
-        const apiKey = jwt.sign(
-          { sub: employee.id, employeeName: employee.name },
-          JWT_SECRET,
-          { expiresIn: "30d" },
-        );
-        return res.json({ success: true, apiKey, projectId: project.id });
-      }
+      const apiKey = jwt.sign(
+        { sub: employee.id, employeeName: employee.name },
+        JWT_SECRET,
+        { expiresIn: "30d" },
+      );
+      return res.json({ success: true, apiKey, projectId: project.id });
     }
 
     return res.json({ success: false });

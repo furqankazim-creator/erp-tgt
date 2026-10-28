@@ -8,6 +8,9 @@ dotenv.config();
 
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { JWT_SECRET } from "./auth-secret.mjs";
 import jwt from "jsonwebtoken";
 import { randomUUID } from "node:crypto";
 import { GridFSBucket, ObjectId } from "mongodb";
@@ -54,11 +57,34 @@ import { autoEstimateFromInquiry } from "./auto-estimate.mjs";
 import { matchExistingContact, resolveAccountForContact, findOpenInquiryByEmail } from "./matching.mjs";
 
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production-local-dev-fallback-12345";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 
 const app = express();
-app.use(cors());
+app.set("trust proxy", 1); // behind nginx/Docker: use the real client IP for rate limiting
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
+
+// CORS_ORIGINS="https://erp.example.com,https://www.example.com". Unset in
+// production = no cross-origin browser access (same-origin via nginx still
+// works); unset in development = open, so the Vite dev server just works.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+app.use(
+  cors(
+    CORS_ORIGINS.length > 0
+      ? { origin: CORS_ORIGINS }
+      : process.env.NODE_ENV === "production"
+        ? { origin: false }
+        : undefined,
+  ),
+);
+
+const limiter = (windowMs, limit, message) =>
+  rateLimit({ windowMs, limit, standardHeaders: true, legacyHeaders: false, message: { error: message } });
+app.use("/api", limiter(60 * 1000, 600, "Too many requests, slow down."));
+app.use("/api/auth/login", limiter(15 * 60 * 1000, 20, "Too many login attempts. Try again in 15 minutes."));
+app.use("/api/pmconnect/auto-match", limiter(15 * 60 * 1000, 30, "Too many attempts. Try again later."));
 app.use(express.json({ limit: "10mb" }));
 
 function publicUser(user) {

@@ -20,8 +20,6 @@ export type MockUser = {
 const TOKEN_KEY = "gth-crm-token-v1";
 const SESSION_KEY = "gth-crm-session-v1";
 
-export const DEMO_EMAIL = "demo@globaltech.io";
-export const DEMO_PASSWORD = "demo1234";
 
 export const API_URL = (import.meta.env["VITE_API_URL"] ?? "http://localhost:5052/api").replace(
   /\/$/,

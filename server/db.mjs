@@ -40,9 +40,14 @@ export async function connectDB() {
   await users.createIndex({ id: 1 }, { unique: true });
   await users.createIndex({ email: 1 }, { unique: true });
   const userCount = await users.countDocuments({ email: DEMO_EMAIL });
-  if (userCount === 0) {
+  // ADMIN_PASSWORD sets the owner login's password. Without it the built-in
+  // demo password applies, which must never reach a live deployment.
+  const ownerPassword = process.env.ADMIN_PASSWORD;
+  if (userCount === 0 && !ownerPassword && process.env.NODE_ENV === "production") {
+    console.warn("[auth] ADMIN_PASSWORD not set in production — owner account not created.");
+  } else if (userCount === 0) {
     const salt = await bcrypt.genSalt(10);
-    const hash = await bcrypt.hash(DEMO_PASSWORD, salt);
+    const hash = await bcrypt.hash(ownerPassword || DEMO_PASSWORD, salt);
     await users.insertOne({
       id: randomUUID(),
       email: DEMO_EMAIL,
@@ -53,6 +58,17 @@ export async function connectDB() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+  }
+
+  if (ownerPassword && userCount > 0) {
+    const owner = await users.findOne({ email: DEMO_EMAIL });
+    if (owner && !(await bcrypt.compare(ownerPassword, owner.password_hash))) {
+      await users.updateOne(
+        { email: DEMO_EMAIL },
+        { $set: { password_hash: await bcrypt.hash(ownerPassword, 10), updated_at: new Date().toISOString() } },
+      );
+      console.log("[auth] owner account password updated from ADMIN_PASSWORD.");
+    }
   }
 
   // Migration: only the one true owner account (the demo login every prior

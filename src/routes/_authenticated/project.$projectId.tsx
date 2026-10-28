@@ -1352,7 +1352,7 @@ function ProjectDetail() {
             </TabsContent>
 
             <TabsContent value="client-feedback">
-              <ClientFeedbackTab projectId={p.id} />
+              <ClientFeedbackTab projectId={p.id} project={p} />
             </TabsContent>
 
             <TabsContent value="repositories">
